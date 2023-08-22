@@ -2,6 +2,7 @@ package main
 
 import (
 	"log"
+	"time"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/cors"
@@ -14,6 +15,8 @@ type TestUser struct {
 }
 
 func main() {
+	log.Printf("time: %v\n", time.Now())
+
 	app := fiber.New()
 	app.Use(cors.New())
 
