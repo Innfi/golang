@@ -2,57 +2,53 @@ package main
 
 import (
 	"fmt"
-	"sync"
-	"time"
+	"math/rand"
+	"runtime"
 )
 
-type ChannelPayload struct {
-	StrValue1     string
-	StrValue2     string
-	IntValue      uint32
-	IntArrayValue []int
-}
-
-func say(wait *sync.WaitGroup, c chan ChannelPayload, s string) {
-	payload := ChannelPayload{
-		StrValue1:     "string 1",
-		StrValue2:     "string 2",
-		IntValue:      33,
-		IntArrayValue: []int{9, 1, 2, 3},
-	}
-	fmt.Printf("intArrayValue: %d\n", payload.IntArrayValue[0])
-	c <- payload
-
-	defer wait.Done()
-	for i := 0; i < 5; i++ {
-		time.Sleep(time.Millisecond * 100)
-		fmt.Println(s)
-	}
-}
-
 func main() {
-	c := make(chan ChannelPayload)
-	var wait sync.WaitGroup
-	wait.Add(2) //less than number of goroutines result in early exit
+	var result int64
+	numbers := generateList(1e7)
 
-	go say(&wait, c, "async 1")
-	// go say(&wait, c, "async 2")
-	// go say(&wait, c, "async 3")
+	numCpu := runtime.NumCPU()
+	fmt.Printf("cpu count: %d\n", numCpu)
 
-	go func(msg string) {
-		defer wait.Done()
-		fmt.Println(msg)
-	}("anonymous func with goroutine")
+	totalNumbers := len(numbers)
+	blockRange := totalNumbers / numCpu
 
-	resultPayload := <-c
+	c := make(chan int)
 
-	fmt.Println(resultPayload.StrValue1)
-	fmt.Println(resultPayload.StrValue2)
-	fmt.Println(resultPayload.IntValue)
+	for g := 0; g < numCpu; g++ {
+		start := g * blockRange
+		end := start + blockRange
+		if g == numCpu-1 {
+			end = totalNumbers
+		}
 
-	for index := range resultPayload.IntArrayValue {
-		fmt.Println(resultPayload.IntArrayValue[index])
+		go add(numbers[start:end], c)
 	}
 
-	wait.Wait()
+	for j := 0; j < numCpu; j++ {
+		result += int64(<-c)
+	}
+
+	fmt.Printf("result: %d\n", result)
+}
+
+func generateList(len int) []int {
+	numbers := make([]int, len)
+	for i := 0; i < len; i++ {
+		numbers[i] = rand.Intn(len)
+	}
+
+	return numbers
+}
+
+func add(numbers []int, c chan int) {
+	var v int
+	for _, n := range numbers {
+		v += n
+	}
+
+	c <- v
 }
