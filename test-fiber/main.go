@@ -7,7 +7,28 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/cors"
 	"github.com/gofiber/fiber/v2/middleware/logger"
+
+	jwtware "github.com/gofiber/contrib/jwt"
 )
+
+func AuthMiddleware() fiber.Handler {
+	return jwtware.New(jwtware.Config{
+		SigningKey:   jwtware.SigningKey{Key: []byte("secret key for jwt")},
+		ErrorHandler: jwtError,
+	})
+}
+
+func jwtError(c *fiber.Ctx, err error) error {
+	if err.Error() == "Missing or malformed JWT" {
+		return c.Status(fiber.StatusBadRequest).JSON(
+			fiber.Map{"status": "bad request"},
+		)
+	}
+
+	return c.Status(fiber.StatusUnauthorized).JSON(
+		fiber.Map{"status": "unauthorized"},
+	)
+}
 
 type TestUser struct {
 	Name  string
@@ -25,7 +46,7 @@ func main() {
 	})
 
 	userApi := app.Group("/user")
-	userApi.Get("/first", func(c *fiber.Ctx) error {
+	userApi.Get("/first", AuthMiddleware(), func(c *fiber.Ctx) error {
 		dummyResponse := TestUser{
 			Name:  "innfi",
 			Email: "innfi@test.com",
