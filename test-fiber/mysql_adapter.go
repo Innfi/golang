@@ -34,6 +34,18 @@ func (handle *MySqlAdapter) Init() {
 	fmt.Printf("MySqlAdapter.Init] success\n")
 }
 
+func NewAdapter() *MySqlAdapter {
+	adapter := MySqlAdapter{
+		Url:      "localhost",
+		Id:       "localdb",
+		Password: "test",
+		Database: nil,
+	}
+	adapter.Init()
+
+	return &adapter
+}
+
 func (handle *MySqlAdapter) Create(payload EntityUser) error {
 	result := handle.Database.Create(payload)
 

@@ -38,6 +38,9 @@ type TestUser struct {
 func main() {
 	log.Printf("time: %v\n", time.Now())
 
+	adapter := NewAdapter()
+	service := NewService(adapter)
+
 	app := fiber.New()
 	app.Use(cors.New())
 
@@ -45,33 +48,13 @@ func main() {
 		return c.SendString("hi")
 	})
 
-	userApi := app.Group("/user")
-	userApi.Get("/first", AuthMiddleware(), func(c *fiber.Ctx) error {
-		dummyResponse := TestUser{
-			Name:  "innfi",
-			Email: "innfi@test.com",
-		}
-
-		return c.JSON(dummyResponse)
-	})
-	userApi.Post("/second/:id", func(c *fiber.Ctx) error {
-		log.Printf("id: %s\n", c.Params("id"))
-
-		payload := new(TestUser)
-		if err := c.BodyParser(payload); err != nil {
-			log.Printf("parse error: %s\n", err)
-		}
-
-		log.Printf("name: %s, email: %s\n", payload.Name, payload.Email)
-
-		return c.SendStatus(200)
-	})
-
 	app.Use(logger.New(logger.Config{
 		Format:     "${time} ${method} ${path}",
 		TimeFormat: "02-Jan-2006",
 		TimeZone:   "UTC",
 	}))
+
+	InitRoute(app, service)
 
 	log.Fatal(app.Listen(":3000"))
 }
