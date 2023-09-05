@@ -2,16 +2,20 @@ package main
 
 import (
 	"fmt"
+	"time"
 
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
 
 type EntityUser struct {
 	gorm.Model
-	Id    int    `json:"id"`
-	Name  string `json:"name"`
-	Email string `json:"email"`
+	Id        int            `json:"id" gorm:"primaryKey"`
+	Name      string         `json:"name" gorm:"column:name"`
+	Email     string         `json:"email" gorm:"column:email"`
+	CreatedAt time.Time      `json:"createdAt" gorm:"column:createdAt"`
+	DeletedAt gorm.DeletedAt `json:"deletedAt" gorm:"column:deletedAt"`
 }
 
 type MySqlAdapter struct {
@@ -22,11 +26,13 @@ type MySqlAdapter struct {
 }
 
 func (handle *MySqlAdapter) Init() {
-	databaseUrl := fmt.Sprintf("%s:%s@%s/innfi",
+	databaseUrl := fmt.Sprintf("%s:%s@%s/innfi?parseTime=true",
 		handle.Id, handle.Password, handle.Url)
 	var err error
 
-	handle.Database, err = gorm.Open(mysql.Open(databaseUrl))
+	handle.Database, err = gorm.Open(mysql.Open(databaseUrl), &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Info),
+	})
 	if err != nil {
 		panic(err)
 	}
@@ -68,4 +74,11 @@ func (handle *MySqlAdapter) FindOne(id int) EntityUser {
 	}
 
 	return entity
+}
+
+func (handle *MySqlAdapter) FindIds() []int64 {
+	var ids []int64
+	handle.Database.Raw("SELECT id FROM users WHERE deletedAt IS NULL").Scan(&ids)
+
+	return ids
 }
