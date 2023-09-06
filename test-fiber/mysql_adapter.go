@@ -18,6 +18,11 @@ type EntityUser struct {
 	DeletedAt gorm.DeletedAt `json:"deletedAt" gorm:"column:deletedAt"`
 }
 
+type UserPayload struct {
+	Name  string `json:"name" validate:"required,min=10,max=255"`
+	Email string `json:"email" validate:"max=255"`
+}
+
 type MySqlAdapter struct {
 	Url      string
 	Id       string
