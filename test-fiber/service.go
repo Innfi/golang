@@ -2,6 +2,7 @@ package main
 
 import (
 	"log"
+	"regexp"
 
 	"github.com/gofiber/fiber/v2"
 
@@ -14,7 +15,20 @@ type UserService struct {
 }
 
 func NewService(adapter *MySqlAdapter) *UserService {
-	return &UserService{validator: validator.New(), adapter: adapter}
+	instance := validator.New()
+	registerValidator(instance)
+
+	return &UserService{validator: instance, adapter: adapter}
+}
+
+func registerValidator(instance *validator.Validate) {
+	instance.RegisterValidation(
+		"emailValidator",
+		func(fl validator.FieldLevel) bool {
+			regex := regexp.MustCompile(`^[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,4}$`)
+			return regex.MatchString(fl.Field().String())
+		},
+	)
 }
 
 func (service *UserService) FindUser(id int) EntityUser {

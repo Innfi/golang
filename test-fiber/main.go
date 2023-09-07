@@ -30,11 +30,6 @@ func jwtError(c *fiber.Ctx, err error) error {
 	)
 }
 
-type TestUser struct {
-	Name  string
-	Email string
-}
-
 func main() {
 	log.Printf("time: %v\n", time.Now())
 

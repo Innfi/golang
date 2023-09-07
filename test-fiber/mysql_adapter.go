@@ -20,7 +20,7 @@ type EntityUser struct {
 
 type UserPayload struct {
 	Name  string `json:"name" validate:"required,min=10,max=255"`
-	Email string `json:"email" validate:"max=255"`
+	Email string `json:"email" validate:"emailValidator"`
 }
 
 type MySqlAdapter struct {
