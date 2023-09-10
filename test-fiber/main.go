@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"log"
 	"time"
 
@@ -30,11 +31,15 @@ func jwtError(c *fiber.Ctx, err error) error {
 	)
 }
 
-func main() {
-	log.Printf("time: %v\n", time.Now())
-
+func initWithService(app *fiber.App) {
 	adapter := NewAdapter()
 	service := NewService(adapter)
+
+	InitRoute(app, service)
+}
+
+func main() {
+	log.Printf("time: %v\n", time.Now())
 
 	app := fiber.New()
 	app.Use(cors.New())
@@ -43,13 +48,22 @@ func main() {
 		return c.SendString("hi")
 	})
 
+	app.Hooks().OnName(func(r fiber.Route) error {
+		fmt.Println("name: ", r.Name)
+		fmt.Println("method: ", r.Method)
+
+		return nil
+	})
+
+	app.Get("/named", func(c *fiber.Ctx) error {
+		return c.SendString(c.Route().Name)
+	}).Name("named")
+
 	app.Use(logger.New(logger.Config{
 		Format:     "${time} ${method} ${path}",
 		TimeFormat: "02-Jan-2006",
 		TimeZone:   "UTC",
 	}))
-
-	InitRoute(app, service)
 
 	log.Fatal(app.Listen(":3000"))
 }
