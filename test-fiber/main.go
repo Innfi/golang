@@ -9,11 +9,21 @@ import (
 	"github.com/gofiber/fiber/v2/middleware/logger"
 
 	jwtware "github.com/gofiber/contrib/jwt"
+	pemloader "github.com/kataras/jwt"
 )
 
 func AuthMiddleware() fiber.Handler {
+	pemPath := "keys/public.pem"
+	publicData, err := pemloader.LoadPublicKeyECDSA(pemPath)
+	if err != nil {
+		log.Fatal("failed to read pem data")
+	}
+
 	return jwtware.New(jwtware.Config{
-		SigningKey:   jwtware.SigningKey{Key: []byte("secret key for jwt")},
+		SigningKey: jwtware.SigningKey{
+			JWTAlg: jwtware.ES512,
+			Key:    publicData,
+		},
 		ErrorHandler: jwtError,
 	})
 }
