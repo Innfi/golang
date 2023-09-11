@@ -32,16 +32,23 @@ func registerValidator(instance *validator.Validate) {
 }
 
 func InitRoute(app *fiber.App, service *UserService) {
-	userApi := app.Group("/user")
+	userGroup := app.Group("/user")
 
-	userApi.Get("/first", AuthMiddleware(), func(c *fiber.Ctx) error {
+	userGroup.Get("/temp", func(c *fiber.Ctx) error {
+		log.Println("/user/temp")
+
+		return c.SendStatus(fiber.StatusOK)
+	})
+
+	userGroup.Get("/first", AuthMiddleware(), func(c *fiber.Ctx) error {
 		id := 1
 		dummyResponse := service.FindUser(id)
+		log.Println("resp: ", dummyResponse.ID)
 
 		return c.JSON(dummyResponse)
 	})
 
-	userApi.Post("/second/:id",
+	userGroup.Post("/second/:id",
 		TestMiddleware(),
 		func(c *fiber.Ctx) error {
 			log.Printf("id: %s\n", c.Params("id"))
