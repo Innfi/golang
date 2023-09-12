@@ -1,37 +1,44 @@
 package main
 
 import (
+	"context"
 	"log"
+	"os"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/s3"
 )
 
 func main() {
-	sess, err := session.NewSession(&aws.Config{
-		Region: aws.String("ap-northeast-2"),
-	})
+	cfg, err := config.LoadDefaultConfig(
+		context.TODO(),
+		config.WithRegion(os.Getenv("REGION")),
+	)
+	if err != nil {
+		log.Fatal("failed to load config")
+	}
+
+	s3Client := s3.NewFromConfig(cfg)
+	presignClient := s3.NewPresignClient(s3Client)
+
+	presignResult, err := presignClient.PresignPutObject(
+		context.TODO(),
+		&s3.PutObjectInput{
+			Bucket: aws.String(os.Getenv("BUCKET")),
+			Key:    aws.String("test_key"),
+		},
+		func(opts *s3.PresignOptions) {
+			opts.Expires = time.Duration(60 * time.Second)
+		},
+	)
 
 	if err != nil {
-		log.Fatal("failed to create aws session")
+		log.Fatal("failed to presign for PutObject")
 	}
 
-	s3Service := s3.New(sess)
+	//TODO: upload object via presign url
 
-	request, objErr := s3Service.GetObjectRequest(&s3.GetObjectInput{
-		Bucket: aws.String("innfisBucket"),
-		Key:    aws.String("myKey"),
-	})
-	if objErr != nil {
-		log.Fatal("failed to create object: ", objErr)
-	}
-
-	presignUrl, presignErr := request.Presign(1 * time.Minute)
-	if presignErr != nil {
-		log.Fatal("object presign err: ", presignErr)
-	}
-
-	log.Println("presignUrl: ", presignUrl)
+	log.Println("url: ", presignResult.URL)
 }
