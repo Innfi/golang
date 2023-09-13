@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"io"
 	"log"
+	"net/http"
 	"os"
 	"time"
 
@@ -38,7 +40,33 @@ func main() {
 		log.Fatal("failed to presign for PutObject")
 	}
 
-	//TODO: upload object via presign url
-
 	log.Println("url: ", presignResult.URL)
+
+	filePath := "./test.png"
+	uploadFile, err := os.Open(filePath)
+	if err != nil {
+		log.Fatal("failed to open the file to upload")
+	}
+	defer uploadFile.Close()
+
+	info, err := uploadFile.Stat()
+	if err != nil {
+		log.Fatal("failed to stat file")
+	}
+
+	putResponse, err := PutFile(presignResult.URL, info.Size(), uploadFile)
+	if err != nil {
+		log.Fatal("failed to upload file")
+	}
+
+	log.Println("response code: ", putResponse.StatusCode)
+}
+
+func PutFile(url string, contentLength int64, body io.Reader) (resp *http.Response, err error) {
+	putRequest, err := http.NewRequest("PUT", url, body)
+	if err != nil {
+		return nil, err
+	}
+	putRequest.ContentLength = contentLength
+	return http.DefaultClient.Do(putRequest)
 }
