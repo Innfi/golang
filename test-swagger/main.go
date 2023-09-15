@@ -5,6 +5,8 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 	fiberSwagger "github.com/swaggo/fiber-swagger"
+
+	_ "test-swagger/docs"
 )
 
 // @title Swagger Example API
