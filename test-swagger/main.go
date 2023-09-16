@@ -33,3 +33,19 @@ func main() {
 		log.Fatalf("fiber.Listen failed %s", err)
 	}
 }
+
+// DummyGet ... testing doc
+// @Summary example GET function
+// @Description descriptions here
+// @Tags Users
+// @Accept json
+// @Param id path string true "User ID"
+// @Success 200 {object} object
+// @Failure 400,500 {object} object
+// @Router /dummy [get]
+func DummyGet(app *fiber.App) {
+	app.Get("/dummy", func(c *fiber.Ctx) error {
+
+		return c.JSON(fiber.Map{"stringvalue": "hi", "intvalue": 22})
+	})
+}
