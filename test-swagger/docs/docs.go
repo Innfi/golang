@@ -64,6 +64,53 @@ const docTemplate = `{
                     }
                 }
             }
+        },
+        "/inven/:id": {
+            "get": {
+                "summary": "find single inventory",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "inven id",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/inventory.InventoryUnit"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error"
+                    }
+                }
+            }
+        }
+    },
+    "definitions": {
+        "inventory.InventoryUnit": {
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "stockCount": {
+                    "type": "string"
+                },
+                "stockName": {
+                    "type": "string"
+                },
+                "stockType": {
+                    "type": "string"
+                }
+            }
         }
     }
 }`
@@ -71,8 +118,8 @@ const docTemplate = `{
 // SwaggerInfo holds exported Swagger Info so clients can modify it
 var SwaggerInfo = &swag.Spec{
 	Version:          "1.0",
-	Host:             "petstore.swagger.io",
-	BasePath:         "/v2",
+	Host:             "localhost:3000",
+	BasePath:         "/v1",
 	Schemes:          []string{},
 	Title:            "Swagger Example API",
 	Description:      "This is a sample server Petstore server.",

@@ -7,6 +7,7 @@ import (
 	fiberSwagger "github.com/swaggo/fiber-swagger"
 
 	_ "test-swagger/docs"
+	inven "test-swagger/inventory"
 )
 
 // @title Swagger Example API
@@ -21,10 +22,13 @@ import (
 // @license.name Apache 2.0
 // @license.url http://www.apache.org/licenses/LICENSE-2.0.html
 
-// @host petstore.swagger.io
-// @BasePath /v2
+// @host localhost:3000
+// @BasePath /v1
 func main() {
 	app := fiber.New()
+
+	invenService := inven.InvenService{}
+	invenService.InitRoute(app)
 
 	app.Get("/swagger/*", fiberSwagger.WrapHandler)
 

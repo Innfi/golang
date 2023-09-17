@@ -1,5 +1,19 @@
-basePath: /v2
-host: petstore.swagger.io
+basePath: /v1
+definitions:
+  inventory.InventoryUnit:
+    properties:
+      id:
+        type: string
+      name:
+        type: string
+      stockCount:
+        type: string
+      stockName:
+        type: string
+      stockType:
+        type: string
+    type: object
+host: localhost:3000
 info:
   contact:
     email: support@swagger.io
@@ -40,4 +54,20 @@ paths:
       summary: example GET function
       tags:
       - Users
+  /inven/:id:
+    get:
+      parameters:
+      - description: inven id
+        in: path
+        name: id
+        required: true
+        type: string
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/inventory.InventoryUnit'
+        "500":
+          description: Internal Server Error
+      summary: find single inventory
 swagger: "2.0"
