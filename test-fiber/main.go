@@ -8,6 +8,7 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/cors"
 	"github.com/gofiber/fiber/v2/middleware/logger"
+	"github.com/gofiber/fiber/v2/middleware/recover"
 
 	jwtware "github.com/gofiber/contrib/jwt"
 	pemloader "github.com/kataras/jwt"
@@ -53,6 +54,12 @@ func main() {
 
 	app := fiber.New()
 	app.Use(cors.New())
+	app.Use(recover.New(recover.Config{
+		EnableStackTrace: true,
+		StackTraceHandler: func(c *fiber.Ctx, data interface{}) {
+			log.Println("trace data: ", data)
+		},
+	}))
 
 	app.Get("/", func(c *fiber.Ctx) error {
 		return c.SendString("hi")
