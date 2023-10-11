@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -53,7 +54,25 @@ func main() {
 	log.Printf("time: %v\n", time.Now())
 
 	app := fiber.New()
-	app.Use(cors.New())
+	app.Use(cors.New(cors.Config{
+		Next: func(c *fiber.Ctx) bool {
+			log.Println("cors.next] ")
+
+			return false
+		},
+		AllowOriginsFunc: func(origin string) bool {
+			return true
+		},
+		AllowOrigins: "*",
+		AllowMethods: strings.Join([]string{
+			fiber.MethodGet,
+			fiber.MethodPost,
+		}, ","),
+		AllowHeaders:     "",
+		AllowCredentials: false,
+		ExposeHeaders:    "h-verified",
+		MaxAge:           10,
+	}))
 	app.Use(recover.New(recover.Config{
 		EnableStackTrace: true,
 		StackTraceHandler: func(c *fiber.Ctx, data interface{}) {
