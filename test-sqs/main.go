@@ -8,6 +8,44 @@ import (
 	"github.com/aws/aws-sdk-go/service/sqs"
 )
 
+func HandleSQSMessage() {
+	queueUrl := "http://your-queue-url.region.amazonaws.com"
+	sess := session.Must(session.NewSessionWithOptions(session.Options{
+		SharedConfigState: session.SharedConfigEnable,
+	}))
+
+	svc := sqs.New(sess)
+
+	receiveResult, err := svc.ReceiveMessage(&sqs.ReceiveMessageInput{
+		MessageAttributeNames: []*string{
+			aws.String(sqs.QueueAttributeNameAll),
+		},
+		QueueUrl:          aws.String(queueUrl),
+		VisibilityTimeout: aws.Int64(30),
+	})
+
+	if err != nil {
+		fmt.Println("ReceiveMessageError")
+		return
+	}
+
+	for _, message := range receiveResult.Messages {
+		fmt.Println("message body: ", *(message.Body))
+		fmt.Println(
+			"MessageType attribute: ",
+			*(message.MessageAttributes["MessageType"].StringValue))
+
+		_, err := svc.DeleteMessage(&sqs.DeleteMessageInput{
+			QueueUrl:      &queueUrl,
+			ReceiptHandle: message.ReceiptHandle,
+		})
+
+		if err != nil {
+			fmt.Println("deleteMessage error: ", err)
+		}
+	}
+}
+
 func main() {
 	queueUrl := "http://your-queue-url.region.amazonaws.com"
 	sess := session.Must(session.NewSessionWithOptions(session.Options{
