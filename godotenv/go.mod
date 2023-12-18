@@ -1,4 +1,4 @@
-module test-env
+module godotenv
 
 go 1.18
 

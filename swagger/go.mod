@@ -1,4 +1,4 @@
-module test-swagger
+module swagger
 
 go 1.18
 

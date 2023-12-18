@@ -1,4 +1,4 @@
-module test-event
+module gnet
 
 go 1.18
 

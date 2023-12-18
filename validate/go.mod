@@ -1,4 +1,4 @@
-module test-validate
+module validate
 
 go 1.18
 

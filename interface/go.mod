@@ -1,4 +1,4 @@
-module test-interface
+module interface
 
 go 1.18
 

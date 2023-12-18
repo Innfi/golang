@@ -1,4 +1,4 @@
-module test-sqs
+module sqs
 
 go 1.18
 
