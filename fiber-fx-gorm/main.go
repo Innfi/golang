@@ -6,6 +6,8 @@ import (
 	"github.com/gofiber/fiber/v2"
 
 	"go.uber.org/fx"
+
+	common "fiber-fx-gorm/common"
 )
 
 func InitFiber() *fiber.App {
@@ -27,7 +29,10 @@ func main() {
 	fmt.Println("start from here")
 
 	fx.New(
-		fx.Provide(InitFiber),
+		fx.Provide(
+			common.InitDatabaseHandle,
+			InitFiber,
+		),
 		fx.Invoke(StartFiber),
 	).Run()
 }
