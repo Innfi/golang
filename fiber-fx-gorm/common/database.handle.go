@@ -13,7 +13,7 @@ type DatabaseHandle struct {
 
 func InitDatabaseHandle() *DatabaseHandle {
 	db, err := gorm.Open(
-		mysql.Open("user:pass@tcp(127.0.0.0:3306)"),
+		mysql.Open("root:root@tcp(127.0.0.1:3306)/innfi"),
 		&gorm.Config{},
 	)
 

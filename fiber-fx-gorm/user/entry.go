@@ -1,44 +1,64 @@
 package user
 
 import (
+	"log"
+
+	"github.com/gofiber/fiber/v2"
 	"go.uber.org/fx"
-	// "github.com/gofiber/fiber/v2"
 
 	common "fiber-fx-gorm/common"
 )
 
-type UserRepo struct {
-	handle *common.DatabaseHandle
+type UserPayload struct {
+	Email string `json:"email"`
+	Pass  string `json:"pass"`
 }
 
-func InitUserRepo(handle *common.DatabaseHandle) *UserRepo {
-	return &UserRepo{
-		handle: handle,
-	}
-}
+func RegisterHandler(handle *common.FiberHandle, controller *UserController) {
+	log.Println("InitUserModule] ")
 
-type UserService struct {
-	repo *UserRepo
-}
+	group := handle.App.Group("/user")
 
-func InitUserService(repo *UserRepo) *UserService {
-	return &UserService{
-		repo: repo,
-	}
-}
+	group.Post("",
+		func(c *fiber.Ctx) error {
+			// TODO
+			return c.SendStatus(fiber.StatusCreated)
+		},
+	)
 
-func InitUserModule(controller *UserController) {
+	group.Get(":email<string>",
+		func(c *fiber.Ctx) error {
+			// TODO
 
+			dummyUser := User{
+				Id:    1,
+				Email: "innfi@test.com",
+				Pass:  "pass",
+			}
+
+			return c.JSON(&dummyUser)
+		},
+	)
 }
 
 type UserController struct {
 	service *UserService
 }
 
+func InitUserController(service *UserService) *UserController {
+	log.Println("InitUserController] ")
+
+	return &UserController{
+		service: service,
+	}
+}
+
 func GetUserModule() fx.Option {
 	return fx.Options(
+		fx.Provide(InitUserController),
 		fx.Provide(InitUserService),
 		fx.Provide(InitUserRepo),
 		fx.Invoke(InitUserService),
+		fx.Invoke(RegisterHandler),
 	)
 }
