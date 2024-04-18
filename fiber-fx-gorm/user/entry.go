@@ -14,7 +14,11 @@ type UserPayload struct {
 	Pass  string `json:"pass"`
 }
 
-func RegisterHandler(handle *common.FiberHandle, controller *UserController) {
+func RegisterHandler(
+	handle *common.FiberHandle,
+	controller *UserController,
+	channelHandle *common.ChannelHandle,
+) {
 	log.Println("InitUserModule] ")
 
 	group := handle.App.Group("/user")
@@ -39,6 +43,8 @@ func RegisterHandler(handle *common.FiberHandle, controller *UserController) {
 			return c.JSON(&dummyUser)
 		},
 	)
+
+	channelHandle.Handle <- common.ChannelPayload{Id: 1234}
 }
 
 type UserController struct {

@@ -15,6 +15,7 @@ func Bootstrap() {
 		fx.Provide(
 			common.InitDatabaseHandle,
 			common.InitFiberHandle,
+			common.InitChannelHandle,
 		),
 		fx.Invoke(
 			common.StartFiber,
