@@ -44,7 +44,7 @@ func RegisterHandler(
 		},
 	)
 
-	channelHandle.Handle <- common.ChannelPayload{Id: 1234}
+	channelHandle.Channel <- common.ChannelPayload{Id: 1234}
 }
 
 type UserController struct {

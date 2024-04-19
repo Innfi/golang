@@ -19,6 +19,7 @@ func Bootstrap() {
 		),
 		fx.Invoke(
 			common.StartFiber,
+			common.ChannelDataHandler,
 		),
 	).Run()
 }

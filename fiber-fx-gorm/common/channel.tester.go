@@ -7,22 +7,24 @@ type ChannelPayload struct {
 }
 
 type ChannelHandle struct {
-	Handle chan ChannelPayload
+	Channel chan ChannelPayload
 }
 
 func InitChannelHandle() *ChannelHandle {
 	log.Println("InitChannelHandle] ")
 
 	return &ChannelHandle{
-		Handle: make(chan ChannelPayload),
+		Channel: make(chan ChannelPayload, 10),
 	}
 }
 
-func ChannelDataHandler(ch chan ChannelPayload) {
-	for {
-		select {
-		case data := <-ch:
-			println("ChannelDataHandler] data: ", data.Id)
+func ChannelDataHandler(handle *ChannelHandle) {
+	go func() {
+		for {
+			select {
+			case data := <-handle.Channel:
+				println("ChannelDataHandler] data: ", data.Id)
+			}
 		}
-	}
+	}()
 }
