@@ -24,14 +24,14 @@ func main() {
 }
 
 func handleConnection(conn net.Conn) {
-	defer conn.Close()
+	for {
+		buf := make([]byte, 100)
+		_, err := conn.Read(buf)
+		if err != nil {
+			fmt.Println(err)
+			continue
+		}
 
-	buf := make([]byte, 100)
-	_, err := conn.Read(buf)
-	if err != nil {
-		fmt.Println(err)
-		return
+		fmt.Printf("message: %s\n", buf)
 	}
-
-	fmt.Printf("message: %s\n", buf)
 }
