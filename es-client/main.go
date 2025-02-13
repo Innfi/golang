@@ -1,12 +1,21 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"log"
 	"os"
+	"time"
 
 	"github.com/elastic/go-elasticsearch/v8"
 	"github.com/joho/godotenv"
 )
+
+type TestDocument struct {
+	Id        int32     `json:"id"`
+	Message   string    `json:"message"`
+	CreatedAt time.Time `json:"createdAt"`
+}
 
 func main() {
 	if err := godotenv.Load(".env"); err != nil {
@@ -24,11 +33,38 @@ func main() {
 	}
 
 	// Create a new index
-	indexName := "my_index"
-	_, err = client.Indices.Create(indexName)
+	index_name := "my_index"
+	_, err = client.Indices.Create(index_name)
 	if err != nil {
 		log.Fatalf("Error creating index: %s", err)
 	}
 
-	log.Printf("Index '%s' created successfully", indexName)
+	log.Printf("Index '%s' created successfully", index_name)
+
+	test_doc := TestDocument{
+		Id:        1,
+		Message:   "document for index test",
+		CreatedAt: time.Now(),
+	}
+	serialized, err := json.Marshal(test_doc)
+	if err != nil {
+		log.Fatalf("Error from Marshal(): %s\n", err)
+	}
+
+	_, index_err := client.Index(index_name, bytes.NewReader(serialized))
+	if index_err != nil {
+		log.Fatalf("Error writing document: %s\n", err)
+	}
+
+	/* not working */
+	//
+	// search_result, search_err := client.Search().
+	// 	Index(index_name).
+	// 	Request(&search.Request{
+	// 		Query: &types.Query{
+	// 			Match: map[string]types.MatchQuery{
+	// 				"message": {Query: "Hello"},
+	// 			},
+	// 		},
+	// 	}).Do(context.Background())
 }
