@@ -28,6 +28,10 @@ func (service UserService) FindUser(email string) (*User, error) {
 	return user, nil
 }
 
+// func (service UserService) FindUserWithJoin(email string) {
+//
+// }
+
 func InitUserService(repo *UserRepo) *UserService {
 	log.Println("InitUserService] ")
 	return &UserService{

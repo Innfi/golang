@@ -1,20 +1,10 @@
 package user
 
 import (
-	"time"
+	common "fiber-fx-gorm/common"
 
 	"gorm.io/gorm"
-
-	common "fiber-fx-gorm/common"
 )
-
-type User struct {
-	Id        int64          `json:"id" gorm:"primaryKey"`
-	Email     string         `json:"email" gorm:"column:email"`
-	Pass      string         `json:"pass" gorm:"column:pass"`
-	CreatedAt time.Time      `json:"createdAt" gorm:"column:createdAt"`
-	DeletedAt gorm.DeletedAt `json:"deletedAt" gorm:"column:deletedAt"`
-}
 
 type UserRepository interface {
 	Save(payload UserPayload) (*User, error)
@@ -22,7 +12,7 @@ type UserRepository interface {
 }
 
 type UserRepo struct {
-	handle *common.DatabaseHandle
+	db *gorm.DB
 }
 
 func (repo UserRepo) Save(payload UserPayload) (*User, error) {
@@ -33,8 +23,16 @@ func (repo UserRepo) FindOne(email string) (*User, error) {
 	return nil, nil
 }
 
+func (repo UserRepo) FindOneWithJoin(email string) (*JoinedUser, error) {
+	var joinedUser JoinedUser
+
+	repo.db.Model(&User{}).Select("users.id, users.email, emailStat.suppressedFor, emailStat.hardbouncedFor").Joins("left join emailStats on users.email=emailStat.email").Scan(&joinedUser)
+
+	return &joinedUser, nil
+}
+
 func InitUserRepo(handle *common.DatabaseHandle) *UserRepo {
 	return &UserRepo{
-		handle: handle,
+		db: handle.Db,
 	}
 }

@@ -8,7 +8,7 @@ import (
 )
 
 type DatabaseHandle struct {
-	handle *gorm.DB
+	Db *gorm.DB
 }
 
 func InitDatabaseHandle() *DatabaseHandle {
@@ -31,6 +31,6 @@ func InitDatabaseHandle() *DatabaseHandle {
 	sqlDB.SetMaxOpenConns(100)
 
 	return &DatabaseHandle{
-		handle: db,
+		db,
 	}
 }
