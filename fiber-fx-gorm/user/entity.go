@@ -7,10 +7,10 @@ import (
 )
 
 type JoinedUser struct {
-	Id             string `json:"id"`
-	Email          string `json:"email"`
-	SuppressedFor  string `json:"suppressed"`
-	HardBouncedFor string `json:"hardbounced"`
+	Id             string `json:"id" gorm:"column:id"`
+	Email          string `json:"email" gorm:"column:email"`
+	SuppressedFor  string `json:"suppressed" gorm:"column:suppressedFor"`
+	HardBouncedFor string `json:"hardbounced" gorm:"hardBouncedFor"`
 }
 
 type User struct {

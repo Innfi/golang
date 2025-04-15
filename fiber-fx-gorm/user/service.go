@@ -9,13 +9,13 @@ type UserService struct {
 }
 
 func (service UserService) CreateUser(payload UserPayload) (*User, error) {
-	user, err := service.repo.Save(payload)
+	err := service.repo.Save(payload)
 	if err != nil {
 		log.Println("failed to create user")
 		return nil, err
 	}
 
-	return user, nil
+	return service.repo.FindOne(payload.Email)
 }
 
 func (service UserService) FindUser(email string) (*User, error) {
@@ -27,10 +27,6 @@ func (service UserService) FindUser(email string) (*User, error) {
 
 	return user, nil
 }
-
-// func (service UserService) FindUserWithJoin(email string) {
-//
-// }
 
 func InitUserService(repo *UserRepo) *UserService {
 	log.Println("InitUserService] ")
