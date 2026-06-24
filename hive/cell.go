@@ -50,7 +50,7 @@ type PrintServiceParams struct {
 	Lifecycle cell.Lifecycle
 }
 
-func newPrintService(p PrintServiceParams) *PrintService {
+func NewPrintService(p PrintServiceParams) *PrintService {
 	svc := &PrintService{greeter: p.Greeter}
 
 	p.Lifecycle.Append(cell.Hook{
@@ -81,5 +81,5 @@ var Cell = cell.Module(
 	"GreeterModule",
 	cell.Config(GreeterConfig{}),
 	cell.Provide(newGreeter),
-	cell.Provide(newPrintService),
+	cell.Provide(NewPrintService),
 )
