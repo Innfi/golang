@@ -2,6 +2,7 @@ package bumblebee_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 
@@ -125,4 +126,128 @@ func TestMockInjection(t *testing.T) {
 
 	result := svc.Print("alice")
 	assert.Equal(t, result, mockResponse)
+}
+
+func TestLifecycle(t *testing.T) {
+	var started, stopped bool
+
+	testCell := cell.Module(
+		"lifecycle-test",
+		"test lifecycle",
+		cell.Invoke(func(lc cell.Lifecycle) {
+			lc.Append(cell.Hook{
+				OnStart: func(cell.HookContext) error {
+					started = true
+					return nil
+				},
+				OnStop: func(cell cell.HookContext) error {
+					stopped = true
+					return nil
+				},
+			})
+		}),
+	)
+
+	log := hivetest.Logger(t)
+	h := hive.New(testCell)
+
+	require.NoError(t, h.Start(log, context.TODO()))
+	assert.True(t, started, "OnStart called")
+	assert.False(t, stopped, "OnStop not called yet")
+
+	require.NoError(t, h.Stop(log, context.TODO()))
+	assert.True(t, stopped, "OnStop called")
+}
+
+func TestShutdownNormal(t *testing.T) {
+	h := hive.New(
+		cell.Invoke(func(lc cell.Lifecycle, shutdowner hive.Shutdowner) {
+			lc.Append(cell.Hook{
+				OnStart: func(cell.HookContext) error {
+					shutdowner.Shutdown()
+					return nil
+				},
+			})
+		}),
+	)
+
+	assert.NoError(t, h.Run(hivetest.Logger(t)))
+}
+
+func TestShutdownWithError(t *testing.T) {
+	fatalErr := errors.New("fatal error")
+
+	h := hive.New(
+		cell.Invoke(func(lc cell.Lifecycle, shutdowner hive.Shutdowner) {
+			lc.Append(cell.Hook{
+				OnStart: func(cell.HookContext) error {
+					shutdowner.Shutdown(hive.ShutdownWithError(fatalErr))
+					return nil
+				},
+			})
+		}),
+	)
+
+	assert.ErrorIs(t, h.Run(hivetest.Logger(t)), fatalErr)
+}
+
+func TestDecorate(t *testing.T) {
+	type Counter struct{ N int }
+	var outerN, innerN int
+	decoratedCell := cell.Decorate(
+		func(c *Counter) *Counter {
+			return &Counter{N: c.N + 10}
+		},
+		cell.Invoke(func(c *Counter) {
+			innerN = c.N
+		}),
+	)
+
+	h := hive.New(
+		cell.Provide(func() *Counter { return &Counter{N: 1} }),
+		cell.Invoke(func(c *Counter) { outerN = c.N }),
+		decoratedCell,
+		cell.Invoke(func(lc cell.Lifecycle, s hive.Shutdowner) {
+			lc.Append(cell.Hook{OnStart: func(cell.HookContext) error {
+				s.Shutdown()
+				return nil
+			}})
+		}),
+	)
+
+	require.NoError(t, h.Run(hivetest.Logger(t), func(h *hive.Hive) {
+		h.PrintDotGraph()
+	}))
+	assert.Equal(t, 1, outerN)
+	assert.Equal(t, 11, innerN)
+}
+
+func TestProvidePrivate(t *testing.T) {
+	type Secret struct{ Token string }
+
+	moduleCell := cell.Module(
+		"private-test",
+		"test private provide",
+		cell.ProvidePrivate(func() *Secret {
+			return &Secret{Token: "abc123"}
+		}),
+		cell.Invoke(func(s *Secret) {
+			assert.Equal(t, "abc123", s.Token)
+		}),
+	)
+
+	h := hive.New(moduleCell, cell.Invoke(func(lc cell.Lifecycle, s hive.Shutdowner) {
+		lc.Append(cell.Hook{OnStart: func(cell.HookContext) error {
+			s.Shutdown()
+			return nil
+		}})
+	}))
+	assert.NoError(t, h.Run(hivetest.Logger(t)))
+
+	h2 := hive.New(
+		moduleCell,
+		cell.Invoke(func(s *Secret) {}),
+	)
+	err := h2.Start(hivetest.Logger(t), context.TODO())
+	assert.ErrorContains(t, err, "missing type")
 }
