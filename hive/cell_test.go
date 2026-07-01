@@ -216,7 +216,7 @@ func TestDecorate(t *testing.T) {
 	)
 
 	require.NoError(t, h.Run(hivetest.Logger(t), func(h *hive.Hive) {
-		h.PrintDotGraph()
+		// h.PrintDotGraph()
 	}))
 	assert.Equal(t, 1, outerN)
 	assert.Equal(t, 11, innerN)

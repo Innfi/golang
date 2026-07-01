@@ -118,3 +118,60 @@ node_count = 5
 	assert.Equal(t, v.GetString("aws.region"), "ap-northeast-2")
 	assert.Equal(t, v.GetInt("aws.account_id"), 123456789012)
 }
+
+func TestEnvVarsFlat(t *testing.T) {
+	v := newViper()
+	v.SetEnvPrefix("MYAPP")
+	v.AutomaticEnv()
+
+	t.Setenv("MYAPP_LOG_LEVEL", "debug")
+	t.Setenv("MYAPP_WORKERS", "8")
+
+	assert.Equal(t, v.GetString("log_level"), "debug")
+	assert.Equal(t, v.GetString("workers"), "8")
+}
+
+func TestBindEnv(t *testing.T) {
+	v := newViper()
+
+	t.Setenv("AWS_REGION", "ap-northeast-2")
+	require.NoError(t, v.BindEnv("aws_region", "AWS_REGION"))
+
+	assert.Equal(t, v.GetString("aws_region"), "ap-northeast-2")
+
+	t.Setenv("DB_HOST", "db.internal")
+	require.NoError(t, v.BindEnv("database.host", "DB_HOST"))
+
+	assert.Equal(t, v.GetString("database.host"), "db.internal")
+}
+
+func TestPriority(t *testing.T) {
+	path := writeTempConfig(t, "config.yaml", "port: 7070\n")
+
+	v := newViper()
+	v.SetDefault("port", 3000)
+	v.SetConfigFile(path)
+	_ = v.ReadInConfig()
+
+	t.Setenv("PRIO_PORT", "8888")
+	require.NoError(t, v.BindEnv("port", "PRIO_PORT"))
+
+	assert.Equal(t, v.GetInt("port"), 8888)
+
+	v.Set("port", 9999)
+	assert.Equal(t, v.GetInt("port"), 9999)
+}
+
+type AppConfig struct {
+	Server struct {
+		Host string `mapstructure:"host"`
+		Port int    `mapstructure:"port"`
+	} `mapstructure:"server"`
+
+	Debug   bool   `mapstructure:"debug"`
+	AppName string `mapstructure:"app_name"`
+}
+
+func TestUnmarshal(t *testing.T) {
+
+}
