@@ -3,6 +3,7 @@ package bumblebee_test
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -173,5 +174,55 @@ type AppConfig struct {
 }
 
 func TestUnmarshal(t *testing.T) {
+	const cfg = `
+server:
+  host: "api.example.com"
+  port: 443
+debug: true
+app_name: "copilot"
+`
 
+	path := writeTempConfig(t, "config.yaml", cfg)
+
+	v := newViper()
+	v.SetConfigFile(path)
+	require.NoError(t, v.ReadInConfig())
+
+	var out AppConfig
+	require.NoError(t, v.Unmarshal(&out))
+
+	assert.Equal(t, out.Server.Host, "api.example.com")
+	assert.Equal(t, out.Server.Port, 443)
+	assert.Equal(t, out.Debug, true)
+}
+
+func TestIsSetAndAllKeys(t *testing.T) {
+	v := newViper()
+	v.SetDefault("timeout", 10)
+	v.Set("log_level", "warn")
+
+	assert.True(t, v.IsSet("timeout"))
+	assert.True(t, v.IsSet("log_level"))
+	assert.False(t, v.IsSet("nonexistent_key"))
+
+	keys := v.AllKeys()
+	found := slices.Contains(keys, "log_level")
+
+	assert.True(t, found)
+}
+
+func TestMergeInConfig(t *testing.T) {
+	base := writeTempConfig(t, "base.yaml", "host: base-host\nport: 8080\n")
+	override := writeTempConfig(t, "base.yaml", "port: 9090\nextra: added\n")
+
+	v := newViper()
+	v.SetConfigFile(base)
+	require.NoError(t, v.ReadInConfig())
+
+	v.SetConfigFile(override)
+	require.NoError(t, v.MergeInConfig())
+
+	assert.Equal(t, v.GetString("host"), "base-host")
+	assert.Equal(t, v.GetInt("port"), 9090)
+	assert.Equal(t, v.GetString("extra"), "added")
 }
