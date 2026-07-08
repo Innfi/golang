@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/cilium/statedb"
 	"github.com/cilium/statedb/index"
@@ -163,4 +164,85 @@ func TestTxnIsolationAndAbort(t *testing.T) {
 
 	_, _, err := backends.Insert(wtxn, &Backend{Name: "late", Port: 2})
 	assert.True(t, errors.Is(err, statedb.ErrTransactionClosed))
+}
+
+func TestSecondaryIndexes(t *testing.T) {
+	db, backends := newDB(t)
+
+	wtxn := db.WriteTxn(backends)
+	for _, b := range []*Backend{
+		{Name: "web-1", Port: 80, Labels: []string{"web", "prod"}},
+		{Name: "web-2", Port: 80, Labels: []string{"web", "canary"}},
+		{Name: "api-1", Port: 8080, Labels: []string{"api", "prod"}},
+	} {
+		_, _, err := backends.Insert(wtxn, b)
+		require.NoError(t, err)
+	}
+	wtxn.Commit()
+	rtxn := db.ReadTxn()
+
+	port80 := collect(backends.List(rtxn, BackendPortIndex.Query(80)))
+	assert.Equal(t, len(port80), 2)
+
+	prod := collect(backends.List(rtxn, BackendLabelIndex.Query("canary")))
+	assert.Equal(t, len(prod), 1)
+
+	got := collect(backends.Prefix(rtxn, BackendNameIndex.Query("web-")))
+	assert.Equal(t, len(got), 2)
+}
+
+func TestRevisions(t *testing.T) {
+	db, backends := newDB(t)
+
+	wtxn := db.WriteTxn(backends)
+	// is underscore mandatory?
+	_, _, _ = backends.Insert(wtxn, &Backend{Name: "a", Port: 1})
+	_, _, _ = backends.Insert(wtxn, &Backend{Name: "b", Port: 2})
+
+	rtxn := wtxn.Commit()
+
+	_, revA, _ := backends.Get(rtxn, BackendNameIndex.Query("a"))
+	_, revB, _ := backends.Get(rtxn, BackendNameIndex.Query("b"))
+	require.True(t, revB > revA)
+
+	tableRev := backends.Revision(rtxn)
+	require.Equal(t, tableRev, revB)
+
+	wtxn = db.WriteTxn(backends)
+	_, _, _ = backends.Insert(wtxn, &Backend{Name: "a", Port: 100})
+	rtxn = wtxn.Commit()
+
+	test := statedb.ByRevision[*Backend](revB + 1)
+	changed := collect(backends.LowerBound(rtxn, test))
+
+	assert.Equal(t, len(changed), 1)
+	assert.Equal(t, changed[0].Name, "a")
+	assert.Equal(t, changed[0].Port, uint16(100))
+}
+
+func TestWatchChannels(t *testing.T) {
+	db, backends := newDB(t)
+
+	wtxn := db.WriteTxn(backends)
+	_, _, _ = backends.Insert(wtxn, &Backend{Name: "watched", Port: 1})
+	wtxn.Commit()
+
+	_, _, watch, found := backends.GetWatch(db.ReadTxn(), BackendNameIndex.Query("watched"))
+	require.True(t, found)
+
+	select {
+	case <-watch:
+		t.Fatal("watch closed before any write")
+	default:
+	}
+
+	wtxn = db.WriteTxn(backends)
+	_, _, _ = backends.Insert(wtxn, &Backend{Name: "watched", Port: 2})
+	wtxn.Commit()
+
+	select {
+	case <-watch:
+	case <-time.After(time.Second):
+		t.Fatal("watch channel did no t close after the object changed")
+	}
 }
