@@ -1,6 +1,7 @@
 package bumblebee_test
 
 import (
+	"context"
 	"errors"
 	"iter"
 	"strconv"
@@ -8,6 +9,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cilium/hive"
+	"github.com/cilium/hive/cell"
+	"github.com/cilium/hive/hivetest"
 	"github.com/cilium/statedb"
 	"github.com/cilium/statedb/index"
 	"github.com/stretchr/testify/assert"
@@ -245,4 +249,133 @@ func TestWatchChannels(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("watch channel did no t close after the object changed")
 	}
+}
+
+func TestChangesIterator(t *testing.T) {
+	db, backends := newDB(t)
+
+	wtxn := db.WriteTxn(backends)
+	changeIter, err := backends.Changes(wtxn)
+	require.NoError(t, err)
+
+	defer changeIter.Close()
+	wtxn.Commit()
+
+	wtxn = db.WriteTxn(backends)
+	_, _, _ = backends.Insert(wtxn, &Backend{Name: "x", Port: 1})
+	_, _, _ = backends.Insert(wtxn, &Backend{Name: "y", Port: 2})
+	wtxn.Commit()
+
+	wtxn = db.WriteTxn(backends)
+	_, _, _ = backends.Insert(wtxn, &Backend{Name: "x", Port: 10})
+	_, _, _ = backends.Delete(wtxn, &Backend{Name: "y"})
+	wtxn.Commit()
+
+	upserts := map[string]uint16{}
+	deletes := map[string]bool{}
+	deadline := time.After(2 * time.Second)
+	for {
+		changes, watch := changeIter.Next(db.ReadTxn())
+		for change := range changes {
+			if change.Deleted {
+				deletes[change.Object.Name] = true
+			} else {
+				upserts[change.Object.Name] = change.Object.Port
+			}
+		}
+		if len(upserts) >= 1 && len(deletes) >= 1 {
+			break
+		}
+
+		select {
+		case <-deadline:
+			t.Fatalf("timeout; upserts=%v deletes=%v", upserts, deletes)
+		case <-watch:
+		}
+	}
+
+	assert.Equal(t, upserts["x"], uint16(10))
+	assert.True(t, deletes["y"])
+}
+
+func TestCompareAndSwap(t *testing.T) {
+	db, backends := newDB(t)
+
+	wtxn := db.WriteTxn(backends)
+	_, _, _ = backends.Insert(wtxn, &Backend{Name: "cas", Port: 1})
+	rtxn := wtxn.Commit()
+	_, rev, _ := backends.Get(rtxn, BackendNameIndex.Query("cas"))
+
+	wtxn = db.WriteTxn(backends)
+	_, _, err := backends.CompareAndSwap(wtxn, rev, &Backend{Name: "cas", Port: 2})
+	require.NoError(t, err)
+	wtxn.Commit()
+
+	wtxn = db.WriteTxn(backends)
+	defer wtxn.Abort()
+	_, _, casErr := backends.CompareAndSwap(wtxn, rev, &Backend{Name: "cas", Port: 3})
+	assert.True(t, errors.Is(casErr, statedb.ErrRevisionNotEqual))
+}
+
+func TestInitializers(t *testing.T) {
+	db, backends := newDB(t)
+
+	wtxn := db.WriteTxn(backends)
+	doneK8s := backends.RegisterInitializer(wtxn, "k8s-sync")
+	doneRest := backends.RegisterInitializer(wtxn, "restore")
+	wtxn.Commit()
+
+	init, _ := backends.Initialized(db.ReadTxn())
+	require.False(t, init)
+
+	wtxn = db.WriteTxn(backends)
+	doneK8s(wtxn)
+	wtxn.Commit()
+	init, _ = backends.Initialized(db.ReadTxn())
+	require.False(t, init)
+
+	wtxn = db.WriteTxn(backends)
+	doneRest(wtxn)
+	wtxn.Commit()
+
+	init, _ = backends.Initialized(db.ReadTxn())
+	assert.True(t, init)
+}
+
+func TestHiveIntegration(t *testing.T) {
+	newTableCell := func(db *statedb.DB) (statedb.RWTable[*Backend], error) {
+		return statedb.NewTable(db, "backends", BackendNameIndex, BackendPortIndex, BackendLabelIndex)
+	}
+
+	var (
+		gotDB    *statedb.DB
+		gotTable statedb.Table[*Backend]
+	)
+
+	h := hive.New(
+		statedb.Cell,
+
+		cell.Module(
+			"backends",
+			"Backend table",
+			cell.ProvidePrivate(newTableCell),
+			cell.Provide(statedb.RWTable[*Backend].ToTable),
+		),
+
+		cell.Invoke(func(db *statedb.DB, tbl statedb.Table[*Backend]) {
+			gotDB, gotTable = db, tbl
+		}),
+	)
+
+	log := hivetest.Logger(t)
+	err := h.Start(log, context.Background())
+	require.NoError(t, err)
+	defer func() {
+		err = h.Stop(log, context.Background())
+		require.NoError(t, err)
+	}()
+
+	n := gotTable.NumObjects(gotDB.ReadTxn())
+	assert.True(t, n == 0)
+	assert.Equal(t, gotTable.Name(), "backends")
 }
