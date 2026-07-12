@@ -256,3 +256,71 @@ func TestReconcilUpdate(t *testing.T) {
 		return port == 8080 && h.status("web-1").Kind == reconciler.StatusKindDone
 	})
 }
+
+func TestReconcileErrorAndRetry(t *testing.T) {
+	h := newHarness(t, reconciler.WithRetry(10*time.Millisecond, 50*time.Millisecond))
+	h.target.setFaulty(true)
+	h.insertPending(t, "flaky", 443)
+
+	waitFor(t, "status error", func() bool {
+		return h.status("flaky").Kind == reconciler.StatusKindError
+	})
+
+	require.Equal(t, h.status("flaky").GetError(), "target unavailable")
+	_, ok := h.target.get("flaky")
+	require.False(t, ok)
+
+	h.target.setFaulty(false)
+	waitFor(t, "retry to succeed", func() bool {
+		port, ok := h.target.get("flaky")
+		return ok && port == 443 && h.status("flaky").Kind == reconciler.StatusKindDone
+	})
+}
+
+func TestReconcileDelete(t *testing.T) {
+	h := newHarness(t)
+
+	h.insertPending(t, "doomed", 9000)
+	waitFor(t, "initial reconcile", func() bool {
+		_, ok := h.target.get("doomed")
+		return ok
+	})
+
+	wtxn := h.db.WriteTxn(h.table)
+	_, _, err := h.table.Delete(wtxn, &RBackend{Name: "doomed"})
+	require.NoError(t, err)
+	wtxn.Commit()
+
+	waitFor(t, "target deletion", func() bool {
+		_, ok := h.target.get("doomed")
+		return !ok
+	})
+}
+
+func TestPrune(t *testing.T) {
+	h := newHarness(t)
+
+	h.insertPending(t, "kept", 1)
+	waitFor(t, "initial reconcile", func() bool {
+		_, ok := h.target.get("kept")
+		return ok
+	})
+
+	h.target.put("stale-from-last-boot", 666)
+
+	h.rec.Prune()
+	time.Sleep(100 * time.Millisecond)
+	_, ok := h.target.get("stale-from-last-boot")
+	require.True(t, ok)
+
+	wtxn := h.db.WriteTxn(h.table)
+	h.markInit(wtxn)
+	wtxn.Commit()
+	h.rec.Prune()
+
+	waitFor(t, "stale entry pruned", func() bool {
+		_, stale := h.target.get("stale-from-last-boot")
+		_, kept := h.target.get("kept")
+		return !stale && kept
+	})
+}
