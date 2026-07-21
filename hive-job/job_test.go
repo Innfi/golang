@@ -2,6 +2,7 @@ package bumblebee_test
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"sync"
 	"testing"
@@ -11,6 +12,7 @@ import (
 	"github.com/cilium/hive/cell"
 	"github.com/cilium/hive/hivetest"
 	"github.com/cilium/hive/job"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -99,4 +101,80 @@ func TestOneShopLifecycle(t *testing.T) {
 	stop()
 
 	require.Equal(t, returned.get(), 1)
+}
+
+func TestOneShotRuntimeAdd(t *testing.T) {
+	var group job.Group
+	h := newJobHive(t, func(g job.Group) {
+		group = g
+	})
+
+	stop := startHive(t, h)
+	defer stop()
+
+	var ran counter
+	group.Add(job.OneShot("runtime-job", func(ctx context.Context, health cell.Health) error {
+		ran.inc()
+		return nil
+	}))
+
+	waitFor(t, "runtime job to run without hive restart", func() bool {
+		return ran.get() == 1
+	})
+}
+
+func TestOneShotRetry(t *testing.T) {
+	var attempts counter
+	succeeded := make(chan struct{})
+
+	h := newJobHive(t, func(g job.Group) {
+		g.Add(job.OneShot("flaky", func(ctx context.Context, health cell.Health) error {
+			if attempts.inc() < 3 {
+				return errors.New("transient failure")
+			}
+			close(succeeded)
+			return nil
+		},
+			job.WithRetry(3, job.ConstantBackoff(5*time.Millisecond)),
+		))
+	})
+	stop := startHive(t, h)
+	defer stop()
+
+	select {
+	case <-succeeded:
+	case <-time.After(5 * time.Second):
+		t.Fatal("job did not succeed within retry budget")
+	}
+	got := attempts.get()
+	assert.Equal(t, got, 3)
+}
+
+func TestOneShotWithShutdown(t *testing.T) {
+	var attempts counter
+
+	h := newJobHive(t, func(g job.Group) {
+		g.Add(job.OneShot("critical",
+			func(ctx context.Context, health cell.Health) error {
+				attempts.inc()
+				return errors.New("unrecoverable")
+			},
+			job.WithRetry(2, job.ConstantBackoff(time.Millisecond)),
+			job.WithShutdown(),
+		))
+	})
+
+	done := make(chan error, 1)
+	go func() {
+		done <- h.Run(hivetest.Logger(t, hivetest.LogLevel(slog.LevelError)))
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("hive did not shutdown after critical job failure")
+	}
+
+	got := attempts.get()
+	assert.Equal(t, got, 3)
 }
