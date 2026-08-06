@@ -57,7 +57,7 @@ func TestObservableContract(t *testing.T) {
 	assert.NoError(t, completeErr)
 }
 
-func TestSourcesAnsSinks(t *testing.T) {
+func TestSourcesAndSinks(t *testing.T) {
 	ctx := testCtx(t)
 
 	got, err := stream.ToSlice(ctx, stream.FromSlice([]int{1, 2, 3}))
@@ -91,4 +91,28 @@ func TestSourcesAnsSinks(t *testing.T) {
 
 	got, _ = stream.ToSlice(ctx, stream.FromChannel(ch))
 	assert.Equal(t, got, []int{7, 8})
+}
+
+func TestToChannel(t *testing.T) {
+	ctx := testCtx(t)
+
+	boom := errors.New("stream failed")
+	errCh := make(chan error, 1)
+
+	src := stream.Concat(
+		stream.FromSlice([]int{1, 2, 3}),
+		stream.Error[int](boom),
+	)
+
+	items := []int{}
+	for x := range stream.ToChannel(ctx, src,
+		stream.WithBufferSize(16),
+		stream.WithErrorChan(errCh),
+	) {
+		items = append(items, x)
+	}
+
+	assert.Equal(t, items, []int{1, 2, 3})
+	err := <-errCh
+	assert.True(t, errors.Is(err, boom))
 }
