@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"slices"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -115,4 +116,64 @@ func TestToChannel(t *testing.T) {
 	assert.Equal(t, items, []int{1, 2, 3})
 	err := <-errCh
 	assert.True(t, errors.Is(err, boom))
+}
+
+func TestCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+
+	errCh := make(chan error, 1)
+	stream.Stuck[int]().Observe(ctx,
+		func(int) { t.Error("Stuck must not emit") },
+		func(err error) { errCh <- err },
+	)
+
+	select {
+	case err := <-errCh:
+		t.Fatalf("completed before cancel: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	cancel()
+	select {
+	case err := <-errCh:
+		assert.True(t, errors.Is(err, context.Canceled))
+	case <-time.After(5 * time.Second):
+		t.Fatal("cancel did not complete the subscription")
+	}
+}
+
+func TestOperstors(t *testing.T) {
+	ctx := testCtx(t)
+
+	doubledEvens, _ := stream.ToSlice(ctx,
+		stream.Map(
+			stream.Filter(stream.Range(0, 8), func(x int) bool { return x%2 == 0 }),
+			func(x int) string { return string(rune('a' + x)) },
+		))
+	require.Equal(t, doubledEvens, []string{"a", "c", "e", "g"})
+
+	sums, _ := stream.ToSlice(ctx,
+		stream.Reduce(stream.Range(1, 5), 0, func(acc, x int) int { return acc + x }))
+	require.Equal(t, sums, []int{10})
+
+	flat, _ := stream.ToSlice(ctx,
+		stream.FlatMap(stream.FromSlice([]int{1, 2}), func(x int) stream.Observable[int] {
+			return stream.FromSlice([]int{x, x * 10})
+		}))
+	require.Equal(t, flat, []int{1, 10, 2, 20})
+
+	dis, _ := stream.ToSlice(ctx, stream.Distinct(stream.FromSlice([]int{1, 1, 2, 2, 3, 1})))
+	require.Equal(t, dis, []int{1, 2, 3, 1}) // not 1, 2, 3
+
+	var runs atomic.Int64
+	cold := stream.Map(stream.Just(1), func(x int) int {
+		runs.Add(1)
+		return x
+	})
+
+	assert.Equal(t, runs.Load(), int64(0))
+
+	stream.ToSlice(ctx, cold)
+	stream.ToSlice(ctx, cold)
+	assert.Equal(t, runs.Load(), int64(2))
 }
