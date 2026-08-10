@@ -142,7 +142,7 @@ func TestCancellation(t *testing.T) {
 	}
 }
 
-func TestOperstors(t *testing.T) {
+func TestOperators(t *testing.T) {
 	ctx := testCtx(t)
 
 	doubledEvens, _ := stream.ToSlice(ctx,
@@ -176,4 +176,35 @@ func TestOperstors(t *testing.T) {
 	stream.ToSlice(ctx, cold)
 	stream.ToSlice(ctx, cold)
 	assert.Equal(t, runs.Load(), int64(2))
+}
+
+func TestRetry(t *testing.T) {
+	ctx := testCtx(t)
+
+	var attempts atomic.Int64
+	flaky := stream.FuncObservable[int](
+		func(ctx context.Context, next func(int), complete func(error)) {
+			go func() {
+				n := attempts.Add(1)
+				next(int(n))
+				if n < 3 {
+					complete(errors.New("transient"))
+					return
+				}
+				complete(nil)
+			}()
+		})
+
+	retryPolicy := stream.LimitRetries(
+		stream.BackoffRetry(stream.AlwaysRetry, time.Millisecond, 10*time.Millisecond),
+		5,
+	)
+
+	got, err := stream.ToSlice(ctx, stream.Retry(flaky, retryPolicy))
+	require.NoError(t, err)
+	require.Equal(t, got, []int{1, 2, 3})
+
+	alwaysFails := stream.Error[int](errors.New("permanent"))
+	_, err = stream.ToSlice(ctx, stream.Retry(alwaysFails, stream.LimitRetries(stream.AlwaysRetry, 2)))
+	assert.Error(t, err)
 }
