@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"slices"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -207,4 +208,83 @@ func TestRetry(t *testing.T) {
 	alwaysFails := stream.Error[int](errors.New("permanent"))
 	_, err = stream.ToSlice(ctx, stream.Retry(alwaysFails, stream.LimitRetries(stream.AlwaysRetry, 2)))
 	assert.Error(t, err)
+}
+
+func TestMulticast(t *testing.T) {
+	ctx := testCtx(t)
+
+	mcast, emit, complete := stream.Multicast[int]()
+	emit(-1)
+
+	var (
+		mu       sync.Mutex
+		a, b     []int
+		subCtx   = ctx
+		wgSubbed sync.WaitGroup
+	)
+	wgSubbed.Add(2)
+
+	subscribe := func(out *[]int) {
+		var once sync.Once
+		mcast.Observe(subCtx,
+			func(x int) {
+				mu.Lock()
+				defer mu.Unlock()
+				once.Do(wgSubbed.Done)
+				*out = append(*out, x)
+			},
+			func(error) {},
+		)
+	}
+	subscribe(&a)
+	subscribe(&b)
+
+	done := make(chan struct{})
+	go func() { wgSubbed.Wait(); close(done) }()
+	for {
+		emit(0)
+		select {
+		case <-done:
+			goto subscribed // ...what?
+		case <-time.After(2 * time.Millisecond):
+		}
+	}
+
+subscribed:
+
+	emit(1)
+	emit(2)
+	complete(nil)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		okA := slices.Contains(a, 1) && slices.Contains(a, 2)
+		okB := slices.Contains(b, 1) && slices.Contains(b, 2)
+		mu.Unlock()
+		if okA && okB {
+			break
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+
+	assert.True(t, slices.Contains(a, 1))
+	assert.True(t, slices.Contains(b, 2))
+	assert.False(t, slices.Contains(a, -1))
+	assert.False(t, slices.Contains(b, -1))
+}
+
+func TestMulticastEmitLatest(t *testing.T) {
+	ctx := testCtx(t)
+	mcast, emit, complete := stream.Multicast[string](stream.EmitLatest)
+	defer complete(nil)
+
+	emit("v1")
+	emit("v2")
+
+	got, err := stream.First(ctx, mcast)
+	assert.NoError(t, err)
+	assert.Equal(t, got, "v2")
 }
