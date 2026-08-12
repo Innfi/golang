@@ -288,3 +288,57 @@ func TestMulticastEmitLatest(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, got, "v2")
 }
+
+func TestDebounceAndBuffer(t *testing.T) {
+	ctx := testCtx(t)
+	buffered, err := stream.ToSlice(ctx,
+		stream.Buffer(
+			stream.FromSlice([]int{1, 2, 3, 4, 5}),
+			16,
+			5*time.Millisecond,
+			func(buf []int, item int) []int { return append(buf, item) },
+		))
+	require.NoError(t, err)
+
+	var flat []int
+	for _, b := range buffered {
+		require.Greater(t, len(b), 0)
+		flat = append(flat, b...)
+	}
+
+	require.True(t, slices.Equal(flat, []int{1, 2, 3, 4, 5}))
+
+	mcast, emit, complete := stream.Multicast[int](stream.EmitLatest)
+	debounced := stream.Debounce(mcast, 30*time.Millisecond)
+
+	out := make(chan int, 16)
+	debounced.Observe(ctx, func(x int) { out <- x }, func(error) { close(out) })
+
+	for i := 1; i <= 5; i++ {
+		emit(i)
+	}
+
+	deadline := time.After(3 * time.Second)
+	var lastSeen int
+	for lastSeen != 5 {
+		select {
+		case x := <-out:
+			lastSeen = x
+		case <-deadline:
+			t.Fatalf("debounce never delivered the final value, last=%d", lastSeen)
+		}
+	}
+	complete(nil)
+}
+
+func TestThrottle(t *testing.T) {
+	ctx := testCtx(t)
+
+	start := time.Now()
+	got, err := stream.ToSlice(ctx, stream.Throttle(stream.Range(0, 4), 100, 1))
+	require.NoError(t, err)
+	require.True(t, slices.Equal(got, []int{0, 1, 2, 3}))
+
+	elapsed := time.Since(start)
+	assert.True(t, elapsed > 20*time.Millisecond) // supposed to be less than 20 mili
+}
