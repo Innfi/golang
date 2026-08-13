@@ -342,3 +342,94 @@ func TestThrottle(t *testing.T) {
 	elapsed := time.Since(start)
 	assert.True(t, elapsed > 20*time.Millisecond) // supposed to be less than 20 mili
 }
+
+func TestToMulticast(t *testing.T) {
+	ctx := testCtx(t)
+
+	var runs atomic.Int64
+	cold := stream.Map(stream.FromSlice([]int{1, 2, 3}), func(x int) int {
+		runs.Add(1)
+		return x
+	})
+
+	hot, connect := stream.ToMulticast(cold, stream.EmitLatest)
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	for range 2 {
+		go func() {
+			defer wg.Done()
+			_, err := stream.First(ctx, hot)
+			require.NoError(t, err)
+		}()
+	}
+
+	time.Sleep(20 * time.Millisecond)
+	connect(ctx)
+	wg.Wait()
+
+	n := runs.Load()
+	assert.Equal(t, n, int64(3))
+}
+
+type eventKind int
+
+const (
+	upsert eventKind = iota
+	del
+	sync_
+)
+
+type event struct {
+	Kind eventKind
+	Key  string
+	Done func(error)
+}
+
+func TestResourceStyleEventStream(t *testing.T) {
+	ctx := testCtx(t)
+
+	events, emit, complete := stream.Multicast[event]()
+
+	upserts := stream.Map(
+		stream.Filter(events, func(e event) bool { return e.Kind == upsert }),
+		func(e event) string { return e.Key },
+	)
+
+	collected := make(chan string, 8)
+	upserts.Observe(ctx, func(k string) { collected <- k }, func(error) { close(collected) })
+
+	var acked atomic.Int64
+	done := func(error) { acked.Add(1) }
+
+	for {
+		emit(event{Kind: upsert, Key: "probe", Done: done})
+		select {
+		case <-collected:
+		case <-time.After(2 * time.Millisecond):
+			continue
+		}
+		break
+	}
+
+	emit(event{Kind: upsert, Key: "pod-a", Done: done})
+	emit(event{Kind: sync_, Done: done})
+	emit(event{Kind: del, Key: "pod-a", Done: done})
+	emit(event{Kind: upsert, Key: "pod-b", Done: done})
+
+	want := []string{"pod-a", "pod-b"}
+	var got []string
+	deadline := time.After(3 * time.Second)
+
+	for len(got) < len(want) {
+		select {
+		case k := <-collected:
+			got = append(got, k)
+		case <-deadline:
+			t.Fatalf("timed out, got %v", got)
+		}
+	}
+
+	assert.True(t, slices.Equal(got, want))
+	complete(nil)
+}
