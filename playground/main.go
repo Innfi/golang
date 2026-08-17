@@ -10,6 +10,7 @@ import (
 	"github.com/cilium/hive/job"
 
 	config "playground/config"
+	pods "playground/pods"
 )
 
 func cellInvoker(jg job.Group) {
@@ -29,9 +30,10 @@ func main() {
 	configSet := reader.Read()
 	log.Printf("configSet: %v\n", configSet)
 
-	hive.New(
-		cell.Module("tester", "cell initial",
-			cell.Invoke(cellInvoker),
-		),
-	).Run(logging.DefaultSlogLogger)
+	app := cell.Module("tester", "cell initial",
+		pods.PodsCell,
+		cell.Invoke(cellInvoker),
+	)
+
+	hive.New(app).Run(logging.DefaultSlogLogger)
 }
