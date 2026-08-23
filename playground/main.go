@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"log"
+	"time"
 
 	"github.com/cilium/cilium/pkg/hive"
 	"github.com/cilium/cilium/pkg/logging"
@@ -14,14 +15,19 @@ import (
 )
 
 func cellInvoker(jg job.Group) {
-	jg.Add(job.OneShot(
-		"initial",
-		func(ctx context.Context, _ cell.Health) error {
-			log.Println("cellInvoker: OneShot function")
+	// jg.Add(job.OneShot(
+	// 	"initial",
+	// 	func(ctx context.Context, _ cell.Health) error {
+	// 		log.Println("cellInvoker: OneShot function")
 
-			return nil
-		},
-	))
+	// 		return nil
+	// 	},
+	// ))
+	jg.Add(job.Timer("timer test", func(ctx context.Context) error {
+		log.Println("inside timer")
+
+		return nil
+	}, 1*time.Second))
 }
 
 func main() {
