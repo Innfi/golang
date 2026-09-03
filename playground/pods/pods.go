@@ -5,10 +5,12 @@ import (
 
 	"k8s.io/client-go/tools/cache"
 
+	"github.com/cilium/cilium/pkg/k8s"
 	"github.com/cilium/cilium/pkg/k8s/client"
 	v1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/core/v1"
 	"github.com/cilium/cilium/pkg/k8s/utils"
 	"github.com/cilium/hive/cell"
+	"github.com/cilium/hive/job"
 	"github.com/cilium/statedb"
 	"github.com/cilium/statedb/index"
 )
@@ -54,6 +56,16 @@ func newPodsWatcher(log *slog.Logger, cs client.Clientset) cache.ListerWatcher {
 	}
 
 	return cache.ListerWatcher(utils.ListerWatcherFromTyped(cs.Slim().CoreV1().Pods("")))
+}
+
+func registerReflector(jg job.Group, lw cache.ListerWatcher, db *statedb.DB, pods statedb.RWTable[*v1.Pod]) error {
+	// pass nil check
+
+	cfg := k8s.ReflectorConfig[*v1.Pod]{
+		Name: "pods", Table: pods, ListerWatcher: lw,
+	}
+
+	return k8s.RegisterReflector(jg, db, cfg)
 }
 
 var PodsCell = cell.Module(
