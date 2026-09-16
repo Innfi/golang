@@ -28,7 +28,7 @@ func (Config) Flags(fs *pflag.FlagSet) {
 		"Fail the first N Update attempts per backend, to demonstrate retries")
 }
 
-var backendCell = cell.Module(
+var backendsCell = cell.Module(
 	"backend",
 	"desired backend state and its reconciler",
 
@@ -68,8 +68,8 @@ var app = cell.Module(
 	"miniagent",
 	"Miniature cilium-agent",
 	client.Cell,
-	// PodsCell,
-	// ServicesCell,
+	PodsCell,
+	ServicesCell,
 	backendsCell,
 )
 

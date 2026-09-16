@@ -11,7 +11,6 @@ import (
 )
 
 // service fore resource.Resource[T]
-//
 func newServiceResource(
 	lc cell.Lifecycle,
 	cs client.Clientset,
@@ -34,5 +33,5 @@ func newServiceResource(
 var ServicesCell = cell.Module(
 	"services",
 	"services observed as a Resource[T] event stream",
-	cell.Provide(newServiceResource)
+	cell.Provide(newServiceResource),
 )
