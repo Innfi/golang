@@ -16,18 +16,18 @@ import (
 )
 
 type backendOps struct {
-	log *slog.Logger
-	directory string
-	mu sync.Mutex
-	failN int
+	log          *slog.Logger
+	directory    string
+	mu           sync.Mutex
+	failN        int
 	failuresLeft map[string]int
 }
 
 func newBackendOps(lc cell.Lifecycle, log *slog.Logger, cfg Config) reconciler.Operations[*Backend] {
 	ops := &backendOps{
-		log: log,
-		directory: cfg.Directory,
-		failN: cfg.FailFirstN,
+		log:          log,
+		directory:    cfg.Directory,
+		failN:        cfg.FailFirstN,
 		failuresLeft: map[string]int{},
 	}
 
@@ -40,7 +40,7 @@ func (ops *backendOps) Start(cell.HookContext) error {
 	return os.MkdirAll(ops.directory, 0755)
 }
 
-func (ops *backendOps) Stop(cell.HookContext) error { return nil}
+func (ops *backendOps) Stop(cell.HookContext) error { return nil }
 
 func (ops *backendOps) filename(b *Backend) string {
 	safe := ""
@@ -50,13 +50,13 @@ func (ops *backendOps) filename(b *Backend) string {
 			continue
 		}
 
-		safe := string(r)
+		safe += string(r)
 	}
 
 	return path.Join(ops.directory, safe)
 }
 
-func (ops *backendOps) Update(_ context.Context, _ statedb.ReadTxn, _statedb.Revision, b *Backend) error {
+func (ops *backendOps) Update(_ context.Context, _ statedb.ReadTxn, _ statedb.Revision, b *Backend) error {
 	if err := ops.maybeFail(b); err != nil {
 		ops.log.Warn("update (simulated failure)", "key", b.Key(), "error", err)
 		return err
@@ -70,7 +70,7 @@ func (ops *backendOps) Update(_ context.Context, _ statedb.ReadTxn, _statedb.Rev
 	return err
 }
 
-func (ops *backendOps) Delete(_ context.Context, _ statedb.ReadTxn, _statedb.Revision, b *Backend) error {
+func (ops *backendOps) Delete(_ context.Context, _ statedb.ReadTxn, _ statedb.Revision, b *Backend) error {
 	err := os.Remove(ops.filename(b))
 	if os.IsNotExist(err) {
 		err = nil
@@ -99,7 +99,6 @@ func (ops *backendOps) Prune(_ context.Context, _ statedb.ReadTxn, objects iter.
 		}
 	}
 	sort.Strings(stale)
-
 
 	for _, name := range stale {
 		err := os.Remove(path.Join(ops.directory, name))

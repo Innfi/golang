@@ -13,7 +13,6 @@ import (
 	"github.com/cilium/cilium/pkg/hive"
 	"github.com/cilium/cilium/pkg/k8s/client"
 	"github.com/cilium/cilium/pkg/logging"
-	"github.com/cilium/cilium/pkg/rate"
 )
 
 type Config struct {

@@ -44,18 +44,18 @@ func NewPodTable(db *statedb.DB) (statedb.RWTable[*slim_corev1.Pod], error) {
 
 type PodListerWatcher cache.ListerWatcher
 
-func newPodListerWatcher(log *slog.Logger, cs client.ClientSet) *PodListerWatcher {
+func newPodListerWatcher(log *slog.Logger, cs client.Clientset) PodListerWatcher {
 	if !cs.IsEnabled() {
 		log.Error("k8s client not configured")
 		return nil
 	}
 
-	return &PodListerWatcher(utils.ListerWatcherFromTyped(cs.Slim().CoreV1().Pods("")))
+	return PodListerWatcher(utils.ListerWatcherFromTyped(cs.Slim().CoreV1().Pods("")))
 }
 
 func registerPodReflector(
 	jg job.Group,
-	lw *PodListerWatcher,
+	lw PodListerWatcher,
 	db *statedb.DB,
 	pods statedb.RWTable[*slim_corev1.Pod],
 ) error {

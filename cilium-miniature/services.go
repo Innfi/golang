@@ -32,6 +32,6 @@ func newServiceResource(
 
 var ServicesCell = cell.Module(
 	"services",
-	"services observed as a Resource[T] event stream",
+	"services observed as a Resource event stream",
 	cell.Provide(newServiceResource),
 )
