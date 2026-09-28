@@ -126,6 +126,9 @@ func (ops *backendOps) maybeFail(b *Backend) error {
 }
 
 var (
+	// reconciler knows only Operations[Obj], not bpf map
+	// bpf.NewMapOps works as adapter between reconciler and the map
+	// bpf program can also write back to bpf map
 	_ reconciler.Operations[*Backend] = &backendOps{}
 	_ cell.HookInterface              = &backendOps{}
 )
