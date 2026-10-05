@@ -35,6 +35,7 @@ func main() {
 
 	defer objs.Close()
 
+	// OpenExecutable itself does not attach anything
 	ex, err := link.OpenExecutable(libPath)
 	if err != nil {
 		log.Fatalf("open %s: %v", libPath, err)

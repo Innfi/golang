@@ -20,6 +20,7 @@ struct event {
 
 struct event *unused_event __attribute__((unused));
 
+// .maps: BTF-defined maps (modern map ABI)
 struct {
   __uint(type, BPF_MAP_TYPE_RINGBUF);
   __uint(max_entries, 1 << 24); // 16MiB
@@ -30,7 +31,7 @@ struct {
   __uint(max_entries, 10240);
   __type(key, __u64);
   __type(value, __u64);
-} read_bufs SEC("maps");
+} read_bufs SEC(".maps");
 
 const volatile __u32 target_pid = 0;
 
@@ -61,15 +62,20 @@ static __always_inline int emit(void *buf, int num, __u8 is_read) {
     return 0;
   }
 
+  // submit -> kernel marks fd readable + wakes epoll
   bpf_ringbuf_submit(e, 0);
   return 0;
 }
 
+// uprobe, uretprobe: userspace probes
+
+// fires at function entry
 SEC("uprobe/SSL_write")
 int BPF_UPROBE(probe_ssl_write, void *ssl, const void *buf, int num) {
   return emit((void *)buf, num, 0);
 }
 
+// fires at function entry
 SEC("uprobe/SSL_read")
 int BPF_UPROBE(probe_ssl_read_enter, void *ssl, void *buf, int num) {
   __u64 id = bpf_get_current_pid_tgid();
@@ -80,6 +86,7 @@ int BPF_UPROBE(probe_ssl_read_enter, void *ssl, void *buf, int num) {
   return 0;
 }
 
+// fires at function return
 SEC("uretprobe/SSL_read")
 int BPF_URETPROBE(probe_ssl_read_exit, int ret) {
   __u64 id = bpf_get_current_pid_tgid();
