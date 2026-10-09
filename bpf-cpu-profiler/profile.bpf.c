@@ -1,5 +1,7 @@
+//go:build ignore
+
 #include "vmlinux.h"
-#include <bpf/bpf_headers.h>
+#include <bpf/bpf_helpers.h>
 
 #define MAX_STACK_DEPTH 127
 #define TASK_COMM_LEN 16

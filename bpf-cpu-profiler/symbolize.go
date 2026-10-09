@@ -14,31 +14,31 @@ import (
 
 type symbol struct {
 	addr, size uint64
-	name string
+	name       string
 }
 
 type mapping struct {
 	start, end, off uint64
-	path string
+	path            string
 }
 
-type loadSeg struct{ off, vaddr, filsz uint64 }
+type loadSeg struct{ off, vaddr, filesz uint64 }
 
 type elfInfo struct {
-	syms []symbol
+	syms  []symbol
 	loads []loadSeg
 }
 
-type fileID struct{ dev ino uint64 }
+type fileID struct{ dev, ino uint64 }
 
 type Symbolizer struct {
 	ksyms []symbol
 	procs map[uint32][]mapping
-	elfs map[fileID]*elfInfo
+	elfs  map[fileID]*elfInfo
 }
 
 func NewSymbolizer() (*Symbolizer, error) {
-	ks, err := loadKallSyms()
+	ks, err := loadKallsyms()
 	if err != nil {
 		return nil, err
 	}
@@ -46,7 +46,7 @@ func NewSymbolizer() (*Symbolizer, error) {
 	return &Symbolizer{
 		ksyms: ks,
 		procs: map[uint32][]mapping{},
-		elfs: map[fileID]*elfInfo{},
+		elfs:  map[fileID]*elfInfo{},
 	}, nil
 }
 
@@ -75,7 +75,7 @@ func (s *Symbolizer) User(pid uint32, addr uint64) string {
 
 		fileOff := addr - m.start + m.off
 		if ei := s.elfFor(pid, m.path); ei != nil {
-			for_, seg := range ei.loads {
+			for _, seg := range ei.loads {
 				if fileOff >= seg.off && fileOff < seg.off+seg.filesz {
 					vaddr := fileOff - seg.off + seg.vaddr
 					if sym, ok := lookup(ei.syms, vaddr); ok {
@@ -137,4 +137,83 @@ func loadELF(path string) (*elfInfo, error) {
 			ei.loads = append(ei.loads, loadSeg{p.Off, p.Vaddr, p.Filesz})
 		}
 	}
+
+	return ei, nil
+}
+
+func readMaps(pid uint32) ([]mapping, error) {
+	f, err := os.Open(fmt.Sprintf("/proc/%d/maps", pid))
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	var out []mapping
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		fl := strings.Fields(sc.Text())
+		if len(fl) < 6 || len(fl[1]) < 3 || fl[1][2] != 'x' || !strings.HasPrefix(fl[5], "/") {
+			continue
+		}
+
+		rng := strings.SplitN(fl[0], "-", 2)
+		start, _ := strconv.ParseUint(rng[0], 16, 64)
+		end, _ := strconv.ParseUint(rng[1], 16, 64)
+		off, _ := strconv.ParseUint(fl[2], 16, 64)
+		out = append(out, mapping{start, end, off, fl[5]})
+	}
+
+	return out, sc.Err()
+}
+
+func loadKallsyms() ([]symbol, error) {
+	f, err := os.Open("/proc/kallsyms")
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	var syms []symbol
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		fl := strings.Fields(sc.Text())
+		if len(fl) < 3 {
+			continue
+		}
+
+		switch fl[1] {
+		case "t", "T", "w", "W":
+		default:
+			continue
+		}
+
+		addr, err := strconv.ParseUint(fl[0], 16, 64)
+		if err != nil || addr == 0 {
+			continue
+		}
+
+		syms = append(syms, symbol{addr: addr, name: fl[2]})
+	}
+
+	if len(syms) == 0 {
+		return nil, fmt.Errorf("kallsyms address are hidden")
+	}
+
+	sort.Slice(syms, func(i, j int) bool { return syms[i].addr < syms[j].addr })
+
+	return syms, nil
+}
+
+func lookup(syms []symbol, target uint64) (symbol, bool) {
+	i := sort.Search(len(syms), func(i int) bool { return syms[i].addr > target }) - 1
+	if i < 0 {
+		return symbol{}, false
+	}
+
+	s := syms[i]
+	if s.size != 0 && target >= s.addr+s.size {
+		return symbol{}, false
+	}
+
+	return s, true
 }
