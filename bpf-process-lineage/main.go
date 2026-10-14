@@ -5,12 +5,16 @@ package main
 import (
 	"errors"
 	"flag"
+	"fmt"
 	"log"
 	"os"
 	"time"
 
 	"github.com/cilium/ebpf"
+	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/rlimit"
+
+	"proclineage/internal/lineage"
 )
 
 const (
@@ -66,4 +70,54 @@ func main() {
 			l.Close()
 		}
 	}()
+
+	tracker := lineage.NewTracker(*retain)
+	n, err := lineage.SeedFromProc(tracker, "/proc")
+	if err != nil {
+		log.Fatalf("seed: %v", err)
+	}
+	log.Printf("seeded %d processes, tracing (format=%s opens=%v)", n, *format, *opens)
+
+}
+
+func attach(objs *lineageObjects, opens bool) ([]link.Link, error) {
+	var links []link.Link
+	add := func(l link.Link, err error) error {
+		if err != nil {
+			return err
+		}
+
+		links = append(links, l)
+
+		return nil
+	}
+
+	for _, p := range []*ebpf.Program{objs.HandleFork, objs.HandleExec, objs.HandleExit} {
+		if err := add(link.AttachTracing(link.TracingOptions{Program: p})); err != nil {
+			return links, fmt.Errorf("%s: %w", p, err)
+		}
+	}
+
+	type tracepoint struct {
+		name string
+		prog *ebpf.Program
+	}
+	tps := []tracepoint{
+		{"sys_enter_connect", objs.HandleConnectEnter},
+		{"sys_exit_connect", objs.HandleConnectExit},
+	}
+	if opens {
+		tps = append(tps,
+			tracepoint{"sys_enter_openat", objs.HandleOpenatEnter},
+			tracepoint{"sys_exit_openat", objs.HandleOpenatExit},
+		)
+	}
+
+	for _, tp := range tps {
+		if err := add(link.Tracepoint("syscalls", tp.name, tp.prog, nil)); err != nil {
+			return links, fmt.Errorf("%s: %w", tp.name, err)
+		}
+	}
+
+	return links, nil
 }
