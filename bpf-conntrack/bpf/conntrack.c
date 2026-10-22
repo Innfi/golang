@@ -6,6 +6,13 @@
 
 char __license[] SEC("license") = "GPL";
 
+#ifndef TC_ACT_OK
+#define TC_ACT_OK 0
+#endif
+#ifndef TC_ACT_SHOT
+#define TC_ACT_SHOT 2
+#endif
+
 #define ETH_P_IP 0x0800
 
 #define CT_NEW 0
@@ -16,7 +23,7 @@ char __license[] SEC("license") = "GPL";
 #define ST_IN_POLICY_HIT 2
 #define ST_IN_DROP 3
 
-struct ct_ke {
+struct ct_key {
   __be32 saddr;
   __be32 daddr;
   __be16 sport;
@@ -72,6 +79,14 @@ struct {
   __uint(max_entries, 1 << 16);
 } drops SEC(".maps");
 
+struct tuple {
+  __be32 saddr;
+  __be32 daddr;
+  __be16 sport;
+  __be16 dport;
+  __u8 proto;
+};
+
 static __always_inline void bump(__u32 idx) {
   __u64 *v = bpf_map_lookup_elem(&stats, &idx);
   if (v) __sync_fetch_and_add(v, 1);
@@ -95,7 +110,7 @@ static __always_inline int parse_tuple(struct __sk_buff *skb, struct tuple *t) {
   void *l4 = (void *)ip + ihl * 4;
   if (l4 > data_end) return -1;
 
-  t->sdaddr = ip->saddr;
+  t->saddr = ip->saddr;
   t->daddr = ip->daddr;
   t->proto = ip->protocol;
   t->sport = 0;
@@ -119,7 +134,7 @@ static __always_inline int parse_tuple(struct __sk_buff *skb, struct tuple *t) {
 }
 
 SEC("tc")
-int egress_prod(struct __sk_buff *skb) {
+int egress_prog(struct __sk_buff *skb) {
   struct tuple t;
   if (parse_tuple(skb, &t) < 0) return TC_ACT_OK;
 
@@ -140,7 +155,7 @@ int egress_prod(struct __sk_buff *skb) {
     e->last_seen_ns = now;
   } else {
     struct ct_entry new_entry = {};
-    new_entry.create_ns = now;
+    new_entry.created_ns = now;
     new_entry.last_seen_ns = now;
     new_entry.pkts_fwd = 1;
     new_entry.state = CT_NEW;
@@ -195,5 +210,5 @@ int ingress_prog(struct __sk_buff *skb) {
 
   bump(ST_IN_DROP);
 
-  return TC_ACT_SHOT:
+  return TC_ACT_SHOT;
 }
