@@ -77,7 +77,7 @@ struct {
 struct {
   __uint(type, BPF_MAP_TYPE_RINGBUF);
   __uint(max_entries, 1 << 16);
-  __type(value, struct drop_event)
+  __type(value, struct drop_event);
 } drops SEC(".maps");
 
 struct tuple {
