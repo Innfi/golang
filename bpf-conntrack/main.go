@@ -31,6 +31,9 @@ var statNames = []string{
 	"ingress DROPPED",
 }
 
+// missing parts: timeout, gc, tcp state machine, reverse nat, ipv6
+// reconciler for allow_src?
+
 func main() {
 	if len(os.Args) < 2 {
 		usage()

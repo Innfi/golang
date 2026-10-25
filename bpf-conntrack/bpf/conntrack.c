@@ -50,6 +50,7 @@ struct drop_event {
   __u8 pad[3];
 };
 
+// state is in the map. no global status
 struct {
   __uint(type, BPF_MAP_TYPE_LRU_HASH);
   __type(key, struct ct_key);
@@ -96,6 +97,8 @@ static __always_inline void bump(__u32 idx) {
 static __always_inline int parse_tuple(struct __sk_buff *skb, struct tuple *t) {
   void *data = (void *)(long)skb->data;
   void *data_end = (void *)(long)skb->data_end;
+
+  // only ipv4 header, skipping arp
 
   struct ethhdr *eth = data;
   if ((void *)(eth + 1) > data_end) return -1;
