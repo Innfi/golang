@@ -37,35 +37,42 @@ func (e ScanError) Error() string {
 }
 
 type Collector struct {
-	Creds          *awscreds.Factory
-	DefaultRegions []string // used when an account row has no regions
-	Concurrency    int      // max parallel (account, region) scans
+	Creds              *awscreds.Factory
+	DefaultRegions     []string // used when an account row has no regions
+	Concurrency        int      // max parallel (account, region) scans
+	AccountConcurrency int      // max parallel regions per account; 0 => Concurrency
 }
 
 // CollectVPCs scans every (account, region) pair. One bad account (revoked
 // role, SCP deny, opt-in region disabled) is reported, not fatal.
+// Cancelling ctx stops queued scans; they are reported with ctx.Err().
 func (c *Collector) CollectVPCs(ctx context.Context, accounts []store.Account) ([]VPC, []ScanError) {
 	var (
-		mu   sync.Mutex
-		wg   sync.WaitGroup
-		vpcs []VPC
-		errs []ScanError
-		sem  = make(chan struct{}, max(c.Concurrency, 1))
+		mu        sync.Mutex
+		wg        sync.WaitGroup
+		vpcs      []VPC
+		errs      []ScanError
+		limit     = max(c.Concurrency, 1)
+		acctLimit = limit
+		sem       = make(chan struct{}, limit)
 	)
+	if c.AccountConcurrency > 0 {
+		acctLimit = min(c.AccountConcurrency, limit)
+	}
 
 	for _, acct := range accounts {
 		regions := acct.Regions
 		if len(regions) == 0 {
 			regions = c.DefaultRegions
 		}
+		// API throttling is per account, so cap each account on its own too.
+		acctSem := make(chan struct{}, acctLimit)
 		for _, region := range regions {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				sem <- struct{}{}
-				defer func() { <-sem }()
 
-				got, err := c.vpcsIn(ctx, acct, region)
+				got, err := c.scanLimited(ctx, acctSem, sem, acct, region)
 				mu.Lock()
 				defer mu.Unlock()
 				if err != nil {
@@ -78,6 +85,34 @@ func (c *Collector) CollectVPCs(ctx context.Context, accounts []store.Account) (
 	}
 	wg.Wait()
 	return vpcs, errs
+}
+
+// scanLimited takes the account slot before the global one, so a goroutine
+// waiting on a busy account doesn't hold a global slot other accounts could use.
+func (c *Collector) scanLimited(ctx context.Context, acctSem, sem chan struct{}, acct store.Account, region string) ([]VPC, error) {
+	if err := acquire(ctx, acctSem); err != nil {
+		return nil, err
+	}
+	defer func() { <-acctSem }()
+	if err := acquire(ctx, sem); err != nil {
+		return nil, err
+	}
+	defer func() { <-sem }()
+	return c.vpcsIn(ctx, acct, region)
+}
+
+func acquire(ctx context.Context, sem chan struct{}) error {
+	select {
+	case sem <- struct{}{}:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	// select picks randomly when both are ready; don't start work after cancel.
+	if err := ctx.Err(); err != nil {
+		<-sem
+		return err
+	}
+	return nil
 }
 
 func (c *Collector) vpcsIn(ctx context.Context, acct store.Account, region string) ([]VPC, error) {
