@@ -25,6 +25,7 @@ type Factory struct {
 	cache map[string]*aws.CredentialsCache // key: roleARN|externalID
 }
 
+// NewFactory returns a Factory that assumes roles using base's credentials.
 func NewFactory(base aws.Config, sessionName string) *Factory {
 	return &Factory{
 		base:        base,
@@ -42,6 +43,15 @@ func (f *Factory) ConfigFor(acct store.Account, region string) aws.Config {
 	cfg.Region = region
 	cfg.Credentials = f.credsFor(acct)
 	return cfg
+}
+
+// Verify does a cheap GetCallerIdentity to fail fast on broken trust policies.
+func (f *Factory) Verify(ctx context.Context, acct store.Account, region string) (string, error) {
+	out, err := sts.NewFromConfig(f.ConfigFor(acct, region)).GetCallerIdentity(ctx, &sts.GetCallerIdentityInput{})
+	if err != nil {
+		return "", err
+	}
+	return aws.ToString(out.Arn), nil
 }
 
 func (f *Factory) credsFor(acct store.Account) *aws.CredentialsCache {
@@ -63,13 +73,4 @@ func (f *Factory) credsFor(acct store.Account) *aws.CredentialsCache {
 	c := aws.NewCredentialsCache(p)
 	f.cache[key] = c
 	return c
-}
-
-// Verify does a cheap GetCallerIdentity to fail fast on broken trust policies.
-func (f *Factory) Verify(ctx context.Context, acct store.Account, region string) (string, error) {
-	out, err := sts.NewFromConfig(f.ConfigFor(acct, region)).GetCallerIdentity(ctx, &sts.GetCallerIdentityInput{})
-	if err != nil {
-		return "", err
-	}
-	return aws.ToString(out.Arn), nil
 }

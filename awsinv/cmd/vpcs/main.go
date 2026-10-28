@@ -13,6 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/aws/retry"
 	"github.com/aws/aws-sdk-go-v2/config"
+	_ "github.com/jackc/pgx/v5/stdlib" // registers "pgx" driver for database/sql
 
 	"github.com/innfi/awsinv/awscreds"
 	"github.com/innfi/awsinv/inventory"

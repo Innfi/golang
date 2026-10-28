@@ -37,6 +37,9 @@ type SQLStore struct {
 	DB *sql.DB
 }
 
+var _ AccountStore = (*SQLStore)(nil)
+
+// ListActiveAccounts returns enabled accounts ordered by account ID.
 func (s *SQLStore) ListActiveAccounts(ctx context.Context) ([]Account, error) {
 	rows, err := s.DB.QueryContext(ctx, `
 		SELECT account_id, name, role_arn, COALESCE(external_id, ''), COALESCE(regions, '')

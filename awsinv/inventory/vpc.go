@@ -36,6 +36,7 @@ func (e ScanError) Error() string {
 	return fmt.Sprintf("%s/%s: %v", e.AccountID, e.Region, e.Err)
 }
 
+// Collector scans accounts/regions with bounded global and per-account concurrency.
 type Collector struct {
 	Creds              *awscreds.Factory
 	DefaultRegions     []string // used when an account row has no regions
@@ -101,20 +102,6 @@ func (c *Collector) scanLimited(ctx context.Context, acctSem, sem chan struct{},
 	return c.vpcsIn(ctx, acct, region)
 }
 
-func acquire(ctx context.Context, sem chan struct{}) error {
-	select {
-	case sem <- struct{}{}:
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-	// select picks randomly when both are ready; don't start work after cancel.
-	if err := ctx.Err(); err != nil {
-		<-sem
-		return err
-	}
-	return nil
-}
-
 func (c *Collector) vpcsIn(ctx context.Context, acct store.Account, region string) ([]VPC, error) {
 	client := ec2.NewFromConfig(c.Creds.ConfigFor(acct, region))
 
@@ -143,4 +130,18 @@ func (c *Collector) vpcsIn(ctx context.Context, acct store.Account, region strin
 		}
 	}
 	return out, nil
+}
+
+func acquire(ctx context.Context, sem chan struct{}) error {
+	select {
+	case sem <- struct{}{}:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	// select picks randomly when both are ready; don't start work after cancel.
+	if err := ctx.Err(); err != nil {
+		<-sem
+		return err
+	}
+	return nil
 }
