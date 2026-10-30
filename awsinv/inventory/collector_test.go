@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -20,7 +21,7 @@ import (
 )
 
 // fakeAWS serves STS + EC2 + IAM on one endpoint. Account 222222222222's role
-// is "broken". onCall, if set, runs inside each DescribeVpcs/ListUsers call.
+// is "broken". onCall, if set, runs inside each Describe*/ListUsers call.
 func fakeAWS(t *testing.T, assumeCalls *atomic.Int32, onCall func(acct string)) *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = r.ParseForm()
@@ -48,6 +49,35 @@ func fakeAWS(t *testing.T, assumeCalls *atomic.Int32, onCall func(acct string)) 
 				<vpcId>vpc-%s-%s</vpcId><cidrBlock>10.0.0.0/16</cidrBlock><state>available</state>
 				<isDefault>false</isDefault><tagSet><item><key>Name</key><value>main</value></item></tagSet>
 				</item></vpcSet></DescribeVpcsResponse>`, acct, region)
+		case "DescribeSubnets":
+			acct, region := caller(r)
+			if onCall != nil {
+				onCall(acct)
+			}
+			fmt.Fprintf(w, `<DescribeSubnetsResponse><subnetSet><item>
+				<subnetId>subnet-%s-%s</subnetId><vpcId>vpc-%s-%s</vpcId><cidrBlock>10.0.1.0/24</cidrBlock>
+				<availabilityZone>%sa</availabilityZone><availableIpAddressCount>251</availableIpAddressCount>
+				<mapPublicIpOnLaunch>true</mapPublicIpOnLaunch><defaultForAz>false</defaultForAz><state>available</state>
+				<tagSet><item><key>Name</key><value>public</value></item></tagSet>
+				</item></subnetSet></DescribeSubnetsResponse>`, acct, region, acct, region, region)
+		case "DescribeRouteTables":
+			acct, region := caller(r)
+			if onCall != nil {
+				onCall(acct)
+			}
+			fmt.Fprintf(w, `<DescribeRouteTablesResponse><routeTableSet><item>
+				<routeTableId>rtb-%s-%s</routeTableId><vpcId>vpc-%s-%s</vpcId>
+				<associationSet>
+					<item><main>true</main></item>
+					<item><main>false</main><subnetId>subnet-%s-%s</subnetId></item>
+				</associationSet>
+				<routeSet>
+					<item><destinationCidrBlock>10.0.0.0/16</destinationCidrBlock><gatewayId>local</gatewayId><state>active</state><origin>CreateRouteTable</origin></item>
+					<item><destinationCidrBlock>0.0.0.0/0</destinationCidrBlock><natGatewayId>nat-1</natGatewayId><state>blackhole</state><origin>CreateRoute</origin></item>
+					<item><destinationPrefixListId>pl-1</destinationPrefixListId><instanceId>i-1</instanceId><networkInterfaceId>eni-1</networkInterfaceId><state>active</state><origin>CreateRoute</origin></item>
+				</routeSet>
+				<tagSet><item><key>Name</key><value>private</value></item></tagSet>
+				</item></routeTableSet></DescribeRouteTablesResponse>`, acct, region, acct, region, acct, region)
 		case "ListUsers":
 			acct, _ := caller(r)
 			if onCall != nil {
@@ -117,6 +147,44 @@ func TestCollect_MultiAccount(t *testing.T) {
 		}
 	}
 
+	gotSubnet := map[string]Subnet{}
+	for _, s := range inv.Subnets {
+		gotSubnet[s.SubnetID] = s
+	}
+	gotRT := map[string]RouteTable{}
+	for _, rt := range inv.RouteTables {
+		gotRT[rt.RouteTableID] = rt
+	}
+	if len(inv.Subnets) != 3 || len(inv.RouteTables) != 3 {
+		t.Errorf("want 3 subnets, 3 route tables, got %d, %d", len(inv.Subnets), len(inv.RouteTables))
+	}
+	for _, target := range []struct{ acct, region string }{
+		{"111111111111", "ap-northeast-2"}, {"111111111111", "us-east-1"}, {"333333333333", "ap-northeast-2"},
+	} {
+		id := target.acct + "-" + target.region
+		wantSubnet := Subnet{
+			AccountID: target.acct, Region: target.region, SubnetID: "subnet-" + id, VpcID: "vpc-" + id,
+			CIDR: "10.0.1.0/24", AvailabilityZone: target.region + "a", AvailableIPs: 251, MapPublicIP: true,
+			State: "available", Name: "public", Tags: map[string]string{"Name": "public"},
+		}
+		if got := gotSubnet["subnet-"+id]; !reflect.DeepEqual(got, wantSubnet) {
+			t.Errorf("bad subnet mapping:\n got %+v\nwant %+v", got, wantSubnet)
+		}
+		wantRT := RouteTable{
+			AccountID: target.acct, Region: target.region, RouteTableID: "rtb-" + id, VpcID: "vpc-" + id,
+			IsMain: true, SubnetIDs: []string{"subnet-" + id},
+			Routes: []Route{
+				{"10.0.0.0/16", "local", "active", "CreateRouteTable"},
+				{"0.0.0.0/0", "nat-1", "blackhole", "CreateRoute"},
+				{"pl-1", "i-1", "active", "CreateRoute"},
+			},
+			Name: "private", Tags: map[string]string{"Name": "private"},
+		}
+		if got := gotRT["rtb-"+id]; !reflect.DeepEqual(got, wantRT) {
+			t.Errorf("bad route table mapping:\n got %+v\nwant %+v", got, wantRT)
+		}
+	}
+
 	// IAM is global: account 111 has two regions but is scanned once.
 	gotIAM := map[string]IAMPrincipal{}
 	for _, p := range inv.IAM {
@@ -148,8 +216,9 @@ func TestCollect_MultiAccount(t *testing.T) {
 		}
 		failed[e.Resource+"/"+e.Region] = true
 	}
-	if len(inv.Errors) != 2 || !failed["vpc/ap-northeast-2"] || !failed["iam/global"] {
-		t.Fatalf("want vpc + iam failure for 222222222222, got %v", inv.Errors)
+	if len(inv.Errors) != 4 || !failed["vpc/ap-northeast-2"] || !failed["subnet/ap-northeast-2"] ||
+		!failed["routetable/ap-northeast-2"] || !failed["iam/global"] {
+		t.Fatalf("want vpc + subnet + routetable + iam failure for 222222222222, got %v", inv.Errors)
 	}
 	// Credentials are cached per account across regions and resource types.
 	if n := assumeCalls.Load(); n != 2 {
@@ -171,12 +240,12 @@ func TestCollect_Cancelled(t *testing.T) {
 	}
 	inv := newTestCollector(srv.URL).Collect(ctx, accounts)
 
-	if len(inv.VPCs) != 0 || len(inv.IAM) != 0 {
+	if len(inv.VPCs) != 0 || len(inv.Subnets) != 0 || len(inv.RouteTables) != 0 || len(inv.IAM) != 0 {
 		t.Errorf("want nothing after cancel, got %+v", inv)
 	}
-	// 3 VPC scans (2 + 1 regions) + 2 IAM scans (one per account).
-	if len(inv.Errors) != 5 {
-		t.Fatalf("want 5 scan errors, got %v", inv.Errors)
+	// 3 scans (2 + 1 regions) each for VPC, subnet, route table + 2 IAM scans (one per account).
+	if len(inv.Errors) != 11 {
+		t.Fatalf("want 11 scan errors, got %v", inv.Errors)
 	}
 	for _, e := range inv.Errors {
 		if !errors.Is(e.Err, context.Canceled) {
@@ -216,9 +285,9 @@ func TestCollect_AccountConcurrency(t *testing.T) {
 	}
 
 	inv := c.Collect(context.Background(), accounts)
-	if len(inv.Errors) != 0 || len(inv.VPCs) != 8 || len(inv.IAM) != 4 {
-		t.Fatalf("want 8 VPCs, 4 principals, no errors; got %d VPCs, %d principals, errs %v",
-			len(inv.VPCs), len(inv.IAM), inv.Errors)
+	if len(inv.Errors) != 0 || len(inv.VPCs) != 8 || len(inv.Subnets) != 8 || len(inv.RouteTables) != 8 || len(inv.IAM) != 4 {
+		t.Fatalf("want 8 VPCs, 8 subnets, 8 route tables, 4 principals, no errors; got %d VPCs, %d subnets, %d route tables, %d principals, errs %v",
+			len(inv.VPCs), len(inv.Subnets), len(inv.RouteTables), len(inv.IAM), inv.Errors)
 	}
 	// The cap holds across resource types, not just within VPC scans.
 	for acct, n := range peak {

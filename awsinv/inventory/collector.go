@@ -4,6 +4,7 @@ package inventory
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sync"
 
 	"github.com/innfi/awsinv/awscreds"
@@ -12,14 +13,16 @@ import (
 
 // Inventory is everything one Collect run found.
 type Inventory struct {
-	VPCs   []VPC
-	IAM    []IAMPrincipal
-	Errors []ScanError `json:"-"`
+	VPCs        []VPC
+	Subnets     []Subnet
+	RouteTables []RouteTable
+	IAM         []IAMPrincipal
+	Errors      []ScanError `json:"-"`
 }
 
 // ScanError records a per-target failure without aborting the whole run.
 type ScanError struct {
-	Resource  string // "vpc", "iam", ...
+	Resource  string // "vpc", "subnet", "routetable", "iam", ...
 	AccountID string
 	Region    string
 	Err       error
@@ -45,15 +48,19 @@ type Collector struct {
 func (c *Collector) Collect(ctx context.Context, accounts []store.Account) Inventory {
 	l := c.newLimiter()
 	var (
-		inv              Inventory
-		wg               sync.WaitGroup
-		vpcErrs, iamErrs []ScanError
+		inv                                  Inventory
+		wg                                   sync.WaitGroup
+		vpcErrs, subnetErrs, rtErrs, iamErrs []ScanError
 	)
 	// New resource types: add a field to Inventory and a line here.
 	wg.Go(func() { inv.VPCs, vpcErrs = collect(ctx, l, "vpc", accounts, c.regionsFor, c.vpcsIn) })
+	wg.Go(func() { inv.Subnets, subnetErrs = collect(ctx, l, "subnet", accounts, c.regionsFor, c.subnetsIn) })
+	wg.Go(func() {
+		inv.RouteTables, rtErrs = collect(ctx, l, "routetable", accounts, c.regionsFor, c.routeTablesIn)
+	})
 	wg.Go(func() { inv.IAM, iamErrs = collect(ctx, l, "iam", accounts, global, c.iamIn) })
 	wg.Wait()
-	inv.Errors = append(vpcErrs, iamErrs...)
+	inv.Errors = slices.Concat(vpcErrs, subnetErrs, rtErrs, iamErrs)
 	return inv
 }
 

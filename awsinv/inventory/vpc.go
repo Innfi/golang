@@ -5,6 +5,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	"github.com/aws/aws-sdk-go-v2/service/ec2/types"
 
 	"github.com/innfi/awsinv/store"
 )
@@ -32,10 +33,7 @@ func (c *Collector) vpcsIn(ctx context.Context, acct store.Account, region strin
 			return nil, err
 		}
 		for _, v := range page.Vpcs {
-			tags := make(map[string]string, len(v.Tags))
-			for _, t := range v.Tags {
-				tags[aws.ToString(t.Key)] = aws.ToString(t.Value)
-			}
+			tags := tagMap(v.Tags)
 			out = append(out, VPC{
 				AccountID: acct.AccountID,
 				Region:    region,
@@ -49,4 +47,12 @@ func (c *Collector) vpcsIn(ctx context.Context, acct store.Account, region strin
 		}
 	}
 	return out, nil
+}
+
+func tagMap(in []types.Tag) map[string]string {
+	tags := make(map[string]string, len(in))
+	for _, t := range in {
+		tags[aws.ToString(t.Key)] = aws.ToString(t.Value)
+	}
+	return tags
 }
