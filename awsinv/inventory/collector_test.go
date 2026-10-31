@@ -68,8 +68,9 @@ func fakeAWS(t *testing.T, assumeCalls *atomic.Int32, onCall func(acct string)) 
 			fmt.Fprintf(w, `<DescribeRouteTablesResponse><routeTableSet><item>
 				<routeTableId>rtb-%s-%s</routeTableId><vpcId>vpc-%s-%s</vpcId>
 				<associationSet>
-					<item><main>true</main></item>
-					<item><main>false</main><subnetId>subnet-%s-%s</subnetId></item>
+					<item><routeTableAssociationId>rtbassoc-main</routeTableAssociationId><main>true</main><associationState><state>associated</state></associationState></item>
+					<item><routeTableAssociationId>rtbassoc-subnet</routeTableAssociationId><main>false</main><subnetId>subnet-%s-%s</subnetId><associationState><state>associated</state></associationState></item>
+					<item><routeTableAssociationId>rtbassoc-edge</routeTableAssociationId><main>false</main><gatewayId>igw-1</gatewayId><associationState><state>failed</state></associationState></item>
 				</associationSet>
 				<routeSet>
 					<item><destinationCidrBlock>10.0.0.0/16</destinationCidrBlock><gatewayId>local</gatewayId><state>active</state><origin>CreateRouteTable</origin></item>
@@ -115,6 +116,27 @@ func newTestCollector(srvURL string) *Collector {
 		Creds:          awscreds.NewFactory(base, "test"),
 		DefaultRegions: []string{"ap-northeast-2"},
 		Concurrency:    4,
+	}
+}
+
+func TestHasMainAssociation(t *testing.T) {
+	for _, tc := range []struct {
+		state string
+		want  bool
+	}{
+		{"associated", true},
+		{"associating", false},
+		{"disassociating", false},
+		{"disassociated", false},
+		{"failed", false},
+		{"", false},
+	} {
+		if got := hasMainAssociation([]Association{{IsMain: true, State: tc.state}}); got != tc.want {
+			t.Errorf("state %q: got %v, want %v", tc.state, got, tc.want)
+		}
+	}
+	if hasMainAssociation([]Association{{SubnetID: "subnet-1", State: "associated"}}) {
+		t.Error("subnet association counted as main")
 	}
 }
 
@@ -172,7 +194,12 @@ func TestCollect_MultiAccount(t *testing.T) {
 		}
 		wantRT := RouteTable{
 			AccountID: target.acct, Region: target.region, RouteTableID: "rtb-" + id, VpcID: "vpc-" + id,
-			IsMain: true, SubnetIDs: []string{"subnet-" + id},
+			IsMain: true,
+			Associations: []Association{
+				{AssociationID: "rtbassoc-main", IsMain: true, State: "associated"},
+				{AssociationID: "rtbassoc-subnet", SubnetID: "subnet-" + id, State: "associated"},
+				{AssociationID: "rtbassoc-edge", GatewayID: "igw-1", State: "failed"},
+			},
 			Routes: []Route{
 				{"10.0.0.0/16", "local", "active", "CreateRouteTable"},
 				{"0.0.0.0/0", "nat-1", "blackhole", "CreateRoute"},

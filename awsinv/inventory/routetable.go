@@ -3,6 +3,7 @@ package inventory
 import (
 	"cmp"
 	"context"
+	"slices"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
@@ -17,12 +18,20 @@ type RouteTable struct {
 	Region       string
 	RouteTableID string
 	VpcID        string
-	IsMain       bool     // the VPC's main table; applies to subnets with no explicit association
-	SubnetIDs    []string // explicit associations only
-	GatewayIDs   []string // edge associations (ingress routing)
+	IsMain       bool          // the VPC's main table; applies to subnets with no explicit association
+	Associations []Association // every state; check State before treating one as in effect
 	Routes       []Route
 	Name         string
 	Tags         map[string]string
+}
+
+// Association links a route table to the main slot, a subnet or a gateway.
+type Association struct {
+	AssociationID string
+	SubnetID      string // explicit subnet association
+	GatewayID     string // edge association (ingress routing)
+	IsMain        bool
+	State         string // "associating", "associated", "disassociating", "disassociated" or "failed"
 }
 
 // Route is one entry of a route table.
@@ -54,14 +63,9 @@ func (c *Collector) routeTablesIn(ctx context.Context, acct store.Account, regio
 				Tags:         tags,
 			}
 			for _, a := range rt.Associations {
-				table.IsMain = table.IsMain || aws.ToBool(a.Main)
-				if a.SubnetId != nil {
-					table.SubnetIDs = append(table.SubnetIDs, *a.SubnetId)
-				}
-				if a.GatewayId != nil {
-					table.GatewayIDs = append(table.GatewayIDs, *a.GatewayId)
-				}
+				table.Associations = append(table.Associations, flattenAssociation(a))
 			}
+			table.IsMain = hasMainAssociation(table.Associations)
 			for _, r := range rt.Routes {
 				table.Routes = append(table.Routes, flattenRoute(r))
 			}
@@ -69,6 +73,26 @@ func (c *Collector) routeTablesIn(ctx context.Context, acct store.Account, regio
 		}
 	}
 	return out, nil
+}
+
+func flattenAssociation(a types.RouteTableAssociation) Association {
+	out := Association{
+		AssociationID: aws.ToString(a.RouteTableAssociationId),
+		SubnetID:      aws.ToString(a.SubnetId),
+		GatewayID:     aws.ToString(a.GatewayId),
+		IsMain:        aws.ToBool(a.Main),
+	}
+	if a.AssociationState != nil {
+		out.State = string(a.AssociationState.State)
+	}
+	return out
+}
+
+// A main association on its way in or out does not make the table main.
+func hasMainAssociation(assocs []Association) bool {
+	return slices.ContainsFunc(assocs, func(a Association) bool {
+		return a.IsMain && a.State == string(types.RouteTableAssociationStateCodeAssociated)
+	})
 }
 
 // A route has one destination and one target, each in its own SDK field.
