@@ -79,6 +79,53 @@ func fakeAWS(t *testing.T, assumeCalls *atomic.Int32, onCall func(acct string)) 
 				</routeSet>
 				<tagSet><item><key>Name</key><value>private</value></item></tagSet>
 				</item></routeTableSet></DescribeRouteTablesResponse>`, acct, region, acct, region, acct, region)
+		case "DescribeNatGateways":
+			acct, region := caller(r)
+			if onCall != nil {
+				onCall(acct)
+			}
+			fmt.Fprintf(w, `<DescribeNatGatewaysResponse><natGatewaySet><item>
+				<natGatewayId>nat-%s-%s</natGatewayId><vpcId>vpc-%s-%s</vpcId><subnetId>subnet-%s-%s</subnetId>
+				<connectivityType>public</connectivityType><availabilityMode>zonal</availabilityMode><state>available</state>
+				<natGatewayAddressSet><item>
+					<allocationId>eipalloc-1</allocationId><networkInterfaceId>eni-1</networkInterfaceId>
+					<privateIp>10.0.1.5</privateIp><publicIp>203.0.113.5</publicIp>
+					<availabilityZone>%sa</availabilityZone><isPrimary>true</isPrimary><status>succeeded</status>
+				</item></natGatewayAddressSet>
+				<tagSet><item><key>Name</key><value>egress</value></item></tagSet>
+				</item></natGatewaySet></DescribeNatGatewaysResponse>`, acct, region, acct, region, acct, region, region)
+		case "DescribeInternetGateways":
+			acct, region := caller(r)
+			if onCall != nil {
+				onCall(acct)
+			}
+			fmt.Fprintf(w, `<DescribeInternetGatewaysResponse><internetGatewaySet><item>
+				<internetGatewayId>igw-%s-%s</internetGatewayId><ownerId>%s</ownerId>
+				<attachmentSet><item><vpcId>vpc-%s-%s</vpcId><state>available</state></item></attachmentSet>
+				<tagSet><item><key>Name</key><value>edge</value></item></tagSet>
+				</item></internetGatewaySet></DescribeInternetGatewaysResponse>`, acct, region, acct, acct, region)
+		case "DescribeEgressOnlyInternetGateways":
+			acct, region := caller(r)
+			if onCall != nil {
+				onCall(acct)
+			}
+			fmt.Fprintf(w, `<DescribeEgressOnlyInternetGatewaysResponse><egressOnlyInternetGatewaySet><item>
+				<egressOnlyInternetGatewayId>eigw-%s-%s</egressOnlyInternetGatewayId>
+				<attachmentSet><item><vpcId>vpc-%s-%s</vpcId><state>attached</state></item></attachmentSet>
+				<tagSet><item><key>Name</key><value>v6</value></item></tagSet>
+				</item></egressOnlyInternetGatewaySet></DescribeEgressOnlyInternetGatewaysResponse>`, acct, region, acct, region)
+		case "DescribeTransitGateways":
+			acct, region := caller(r)
+			if onCall != nil {
+				onCall(acct)
+			}
+			// Owned by another account: shared through RAM.
+			fmt.Fprintf(w, `<DescribeTransitGatewaysResponse><transitGatewaySet><item>
+				<transitGatewayId>tgw-%s-%s</transitGatewayId><transitGatewayArn>arn:tgw-%s-%s</transitGatewayArn>
+				<ownerId>999999999999</ownerId><description>hub</description><state>available</state>
+				<options><amazonSideAsn>64512</amazonSideAsn></options>
+				<tagSet><item><key>Name</key><value>core</value></item></tagSet>
+				</item></transitGatewaySet></DescribeTransitGatewaysResponse>`, acct, region, acct, region)
 		case "ListUsers":
 			acct, _ := caller(r)
 			if onCall != nil {
@@ -180,6 +227,26 @@ func TestCollect_MultiAccount(t *testing.T) {
 	if len(inv.Subnets) != 3 || len(inv.RouteTables) != 3 {
 		t.Errorf("want 3 subnets, 3 route tables, got %d, %d", len(inv.Subnets), len(inv.RouteTables))
 	}
+	gotNAT := map[string]NATGateway{}
+	for _, g := range inv.NATGateways {
+		gotNAT[g.NATGatewayID] = g
+	}
+	gotIGW := map[string]InternetGateway{}
+	for _, g := range inv.InternetGateways {
+		gotIGW[g.InternetGatewayID] = g
+	}
+	gotEIGW := map[string]EgressOnlyInternetGateway{}
+	for _, g := range inv.EgressOnlyInternetGateways {
+		gotEIGW[g.EgressOnlyInternetGatewayID] = g
+	}
+	gotTGW := map[string]TransitGateway{}
+	for _, g := range inv.TransitGateways {
+		gotTGW[g.TransitGatewayID] = g
+	}
+	if len(inv.NATGateways) != 3 || len(inv.InternetGateways) != 3 || len(inv.EgressOnlyInternetGateways) != 3 || len(inv.TransitGateways) != 3 {
+		t.Errorf("want 3 of each gateway, got %d NAT, %d internet, %d egress-only, %d transit",
+			len(inv.NATGateways), len(inv.InternetGateways), len(inv.EgressOnlyInternetGateways), len(inv.TransitGateways))
+	}
 	for _, target := range []struct{ acct, region string }{
 		{"111111111111", "ap-northeast-2"}, {"111111111111", "us-east-1"}, {"333333333333", "ap-northeast-2"},
 	} {
@@ -209,6 +276,42 @@ func TestCollect_MultiAccount(t *testing.T) {
 		}
 		if got := gotRT["rtb-"+id]; !reflect.DeepEqual(got, wantRT) {
 			t.Errorf("bad route table mapping:\n got %+v\nwant %+v", got, wantRT)
+		}
+		wantNAT := NATGateway{
+			AccountID: target.acct, Region: target.region, NATGatewayID: "nat-" + id, VpcID: "vpc-" + id, SubnetID: "subnet-" + id,
+			ConnectivityType: "public", AvailabilityMode: "zonal", State: "available",
+			Addresses: []NATGatewayAddress{{
+				AllocationID: "eipalloc-1", NetworkInterfaceID: "eni-1", PrivateIP: "10.0.1.5", PublicIP: "203.0.113.5",
+				AvailabilityZone: target.region + "a", IsPrimary: true, Status: "succeeded",
+			}},
+			Name: "egress", Tags: map[string]string{"Name": "egress"},
+		}
+		if got := gotNAT["nat-"+id]; !reflect.DeepEqual(got, wantNAT) {
+			t.Errorf("bad NAT gateway mapping:\n got %+v\nwant %+v", got, wantNAT)
+		}
+		wantIGW := InternetGateway{
+			AccountID: target.acct, Region: target.region, InternetGatewayID: "igw-" + id, OwnerID: target.acct,
+			Attachments: []GatewayAttachment{{VpcID: "vpc-" + id, State: "available"}},
+			Name:        "edge", Tags: map[string]string{"Name": "edge"},
+		}
+		if got := gotIGW["igw-"+id]; !reflect.DeepEqual(got, wantIGW) {
+			t.Errorf("bad internet gateway mapping:\n got %+v\nwant %+v", got, wantIGW)
+		}
+		wantEIGW := EgressOnlyInternetGateway{
+			AccountID: target.acct, Region: target.region, EgressOnlyInternetGatewayID: "eigw-" + id,
+			Attachments: []GatewayAttachment{{VpcID: "vpc-" + id, State: "attached"}},
+			Name:        "v6", Tags: map[string]string{"Name": "v6"},
+		}
+		if got := gotEIGW["eigw-"+id]; !reflect.DeepEqual(got, wantEIGW) {
+			t.Errorf("bad egress-only internet gateway mapping:\n got %+v\nwant %+v", got, wantEIGW)
+		}
+		wantTGW := TransitGateway{
+			AccountID: target.acct, Region: target.region, TransitGatewayID: "tgw-" + id, ARN: "arn:tgw-" + id,
+			OwnerID: "999999999999", AmazonSideASN: 64512, Description: "hub", State: "available",
+			Name: "core", Tags: map[string]string{"Name": "core"},
+		}
+		if got := gotTGW["tgw-"+id]; !reflect.DeepEqual(got, wantTGW) {
+			t.Errorf("bad transit gateway mapping:\n got %+v\nwant %+v", got, wantTGW)
 		}
 	}
 
@@ -243,9 +346,11 @@ func TestCollect_MultiAccount(t *testing.T) {
 		}
 		failed[e.Resource+"/"+e.Region] = true
 	}
-	if len(inv.Errors) != 4 || !failed["vpc/ap-northeast-2"] || !failed["subnet/ap-northeast-2"] ||
-		!failed["routetable/ap-northeast-2"] || !failed["iam/global"] {
-		t.Fatalf("want vpc + subnet + routetable + iam failure for 222222222222, got %v", inv.Errors)
+	if len(inv.Errors) != 8 || !failed["vpc/ap-northeast-2"] || !failed["subnet/ap-northeast-2"] ||
+		!failed["routetable/ap-northeast-2"] || !failed["natgateway/ap-northeast-2"] ||
+		!failed["internetgateway/ap-northeast-2"] || !failed["egressonlyinternetgateway/ap-northeast-2"] ||
+		!failed["transitgateway/ap-northeast-2"] || !failed["iam/global"] {
+		t.Fatalf("want a failure per resource type for 222222222222, got %v", inv.Errors)
 	}
 	// Credentials are cached per account across regions and resource types.
 	if n := assumeCalls.Load(); n != 2 {
@@ -267,12 +372,13 @@ func TestCollect_Cancelled(t *testing.T) {
 	}
 	inv := newTestCollector(srv.URL).Collect(ctx, accounts)
 
-	if len(inv.VPCs) != 0 || len(inv.Subnets) != 0 || len(inv.RouteTables) != 0 || len(inv.IAM) != 0 {
+	if len(inv.VPCs) != 0 || len(inv.Subnets) != 0 || len(inv.RouteTables) != 0 || len(inv.NATGateways) != 0 ||
+		len(inv.InternetGateways) != 0 || len(inv.EgressOnlyInternetGateways) != 0 || len(inv.TransitGateways) != 0 || len(inv.IAM) != 0 {
 		t.Errorf("want nothing after cancel, got %+v", inv)
 	}
-	// 3 scans (2 + 1 regions) each for VPC, subnet, route table + 2 IAM scans (one per account).
-	if len(inv.Errors) != 11 {
-		t.Fatalf("want 11 scan errors, got %v", inv.Errors)
+	// 3 scans (2 + 1 regions) for each of the 7 regional types + 2 IAM scans (one per account).
+	if len(inv.Errors) != 23 {
+		t.Fatalf("want 23 scan errors, got %v", inv.Errors)
 	}
 	for _, e := range inv.Errors {
 		if !errors.Is(e.Err, context.Canceled) {
@@ -312,9 +418,11 @@ func TestCollect_AccountConcurrency(t *testing.T) {
 	}
 
 	inv := c.Collect(context.Background(), accounts)
-	if len(inv.Errors) != 0 || len(inv.VPCs) != 8 || len(inv.Subnets) != 8 || len(inv.RouteTables) != 8 || len(inv.IAM) != 4 {
-		t.Fatalf("want 8 VPCs, 8 subnets, 8 route tables, 4 principals, no errors; got %d VPCs, %d subnets, %d route tables, %d principals, errs %v",
-			len(inv.VPCs), len(inv.Subnets), len(inv.RouteTables), len(inv.IAM), inv.Errors)
+	if len(inv.Errors) != 0 || len(inv.VPCs) != 8 || len(inv.Subnets) != 8 || len(inv.RouteTables) != 8 || len(inv.NATGateways) != 8 ||
+		len(inv.InternetGateways) != 8 || len(inv.EgressOnlyInternetGateways) != 8 || len(inv.TransitGateways) != 8 || len(inv.IAM) != 4 {
+		t.Fatalf("want 8 of each regional type, 4 principals, no errors; got %d VPCs, %d subnets, %d route tables, %d NAT, %d internet, %d egress-only, %d transit, %d principals, errs %v",
+			len(inv.VPCs), len(inv.Subnets), len(inv.RouteTables), len(inv.NATGateways), len(inv.InternetGateways),
+			len(inv.EgressOnlyInternetGateways), len(inv.TransitGateways), len(inv.IAM), inv.Errors)
 	}
 	// The cap holds across resource types, not just within VPC scans.
 	for acct, n := range peak {

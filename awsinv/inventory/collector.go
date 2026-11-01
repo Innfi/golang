@@ -13,16 +13,20 @@ import (
 
 // Inventory is everything one Collect run found.
 type Inventory struct {
-	VPCs        []VPC
-	Subnets     []Subnet
-	RouteTables []RouteTable
-	IAM         []IAMPrincipal
-	Errors      []ScanError `json:"-"`
+	VPCs                       []VPC
+	Subnets                    []Subnet
+	RouteTables                []RouteTable
+	NATGateways                []NATGateway
+	InternetGateways           []InternetGateway
+	EgressOnlyInternetGateways []EgressOnlyInternetGateway
+	TransitGateways            []TransitGateway
+	IAM                        []IAMPrincipal
+	Errors                     []ScanError `json:"-"`
 }
 
 // ScanError records a per-target failure without aborting the whole run.
 type ScanError struct {
-	Resource  string // "vpc", "subnet", "routetable", "iam", ...
+	Resource  string // "vpc", "subnet", "routetable", "natgateway", "iam", ...
 	AccountID string
 	Region    string
 	Err       error
@@ -51,6 +55,7 @@ func (c *Collector) Collect(ctx context.Context, accounts []store.Account) Inven
 		inv                                  Inventory
 		wg                                   sync.WaitGroup
 		vpcErrs, subnetErrs, rtErrs, iamErrs []ScanError
+		natErrs, igwErrs, eigwErrs, tgwErrs  []ScanError
 	)
 	// New resource types: add a field to Inventory and a line here.
 	wg.Go(func() { inv.VPCs, vpcErrs = collect(ctx, l, "vpc", accounts, c.regionsFor, c.vpcsIn) })
@@ -58,9 +63,21 @@ func (c *Collector) Collect(ctx context.Context, accounts []store.Account) Inven
 	wg.Go(func() {
 		inv.RouteTables, rtErrs = collect(ctx, l, "routetable", accounts, c.regionsFor, c.routeTablesIn)
 	})
+	wg.Go(func() {
+		inv.NATGateways, natErrs = collect(ctx, l, "natgateway", accounts, c.regionsFor, c.natGatewaysIn)
+	})
+	wg.Go(func() {
+		inv.InternetGateways, igwErrs = collect(ctx, l, "internetgateway", accounts, c.regionsFor, c.internetGatewaysIn)
+	})
+	wg.Go(func() {
+		inv.EgressOnlyInternetGateways, eigwErrs = collect(ctx, l, "egressonlyinternetgateway", accounts, c.regionsFor, c.egressOnlyInternetGatewaysIn)
+	})
+	wg.Go(func() {
+		inv.TransitGateways, tgwErrs = collect(ctx, l, "transitgateway", accounts, c.regionsFor, c.transitGatewaysIn)
+	})
 	wg.Go(func() { inv.IAM, iamErrs = collect(ctx, l, "iam", accounts, global, c.iamIn) })
 	wg.Wait()
-	inv.Errors = slices.Concat(vpcErrs, subnetErrs, rtErrs, iamErrs)
+	inv.Errors = slices.Concat(vpcErrs, subnetErrs, rtErrs, natErrs, igwErrs, eigwErrs, tgwErrs, iamErrs)
 	return inv
 }
 

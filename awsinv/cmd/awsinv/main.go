@@ -75,8 +75,9 @@ func main() {
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	_ = enc.Encode(inv)
-	log.Printf("accounts=%d vpcs=%d subnets=%d routetables=%d iam=%d failures=%d",
-		len(accounts), len(inv.VPCs), len(inv.Subnets), len(inv.RouteTables), len(inv.IAM), len(inv.Errors))
+	log.Printf("accounts=%d vpcs=%d subnets=%d routetables=%d natgateways=%d internetgateways=%d egressonlyinternetgateways=%d transitgateways=%d iam=%d failures=%d",
+		len(accounts), len(inv.VPCs), len(inv.Subnets), len(inv.RouteTables), len(inv.NATGateways), len(inv.InternetGateways),
+		len(inv.EgressOnlyInternetGateways), len(inv.TransitGateways), len(inv.IAM), len(inv.Errors))
 }
 
 // filterAccounts keeps the requested accounts, failing on IDs that aren't
