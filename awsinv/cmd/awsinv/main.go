@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -26,9 +27,22 @@ import (
 
 func main() {
 	only := flag.String("account", "", "comma-separated account IDs to scan (default: all active accounts)")
+	socket := flag.String("serve", "", "run as a long-lived server on this unix socket path instead of scanning once")
 	flag.Parse()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	if *socket != "" {
+		if *only != "" {
+			log.Fatal("-account cannot be combined with -serve; pass accounts per request")
+		}
+		runServer(*socket)
+		return
+	}
+	runOnce(*only)
+}
+
+// runOnce scans once, prints the inventory as JSON to stdout and exits.
+func runOnce(only string) {
+	ctx, cancel := context.WithTimeout(context.Background(), scanTimeout)
 	defer cancel()
 	go cancelOnSignal(cancel)
 
@@ -38,33 +52,18 @@ func main() {
 	}
 	defer db.Close()
 
-	accounts, err := (&store.SQLStore{DB: db}).ListActiveAccounts(ctx)
-	if err != nil {
-		log.Fatal(err)
+	var ids []string
+	if only != "" {
+		ids = strings.Split(only, ",")
 	}
-	if *only != "" {
-		if accounts, err = filterAccounts(accounts, strings.Split(*only, ",")); err != nil {
-			log.Fatal(err)
-		}
-	}
-
-	// Hub identity: whatever the default chain resolves (instance role, SSO profile...).
-	// It only needs sts:AssumeRole on the target role ARNs.
-	base, err := config.LoadDefaultConfig(ctx,
-		config.WithRegion("ap-northeast-2"),
-		// Adaptive mode backs off client-side when AWS starts throttling.
-		// Each client gets its own bucket, i.e. one per (account, region, service).
-		config.WithRetryer(func() aws.Retryer { return retry.NewAdaptiveMode() }),
-	)
+	accounts, err := loadAccounts(ctx, &store.SQLStore{DB: db}, ids)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	c := &inventory.Collector{
-		Creds:              awscreds.NewFactory(base, "awsinv"),
-		DefaultRegions:     []string{"ap-northeast-2"},
-		Concurrency:        8,
-		AccountConcurrency: 2,
+	c, err := newCollector(ctx)
+	if err != nil {
+		log.Fatal(err)
 	}
 
 	inv := c.Collect(ctx, accounts)
@@ -75,10 +74,50 @@ func main() {
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	_ = enc.Encode(inv)
+	logSummary(len(accounts), inv)
+}
+
+const scanTimeout = 5 * time.Minute
+
+// loadAccounts returns active accounts, narrowed to ids when non-empty.
+func loadAccounts(ctx context.Context, s store.AccountStore, ids []string) ([]store.Account, error) {
+	accounts, err := s.ListActiveAccounts(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if len(ids) == 0 {
+		return accounts, nil
+	}
+	return filterAccounts(accounts, ids)
+}
+
+func newCollector(ctx context.Context) (*inventory.Collector, error) {
+	// Hub identity: whatever the default chain resolves (instance role, SSO profile...).
+	// It only needs sts:AssumeRole on the target role ARNs.
+	base, err := config.LoadDefaultConfig(ctx,
+		config.WithRegion("ap-northeast-2"),
+		// Adaptive mode backs off client-side when AWS starts throttling.
+		// Each client gets its own bucket, i.e. one per (account, region, service).
+		config.WithRetryer(func() aws.Retryer { return retry.NewAdaptiveMode() }),
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &inventory.Collector{
+		Creds:              awscreds.NewFactory(base, "awsinv"),
+		DefaultRegions:     []string{"ap-northeast-2"},
+		Concurrency:        8,
+		AccountConcurrency: 2,
+	}, nil
+}
+
+func logSummary(accounts int, inv inventory.Inventory) {
 	log.Printf("accounts=%d vpcs=%d subnets=%d routetables=%d natgateways=%d internetgateways=%d egressonlyinternetgateways=%d transitgateways=%d iam=%d failures=%d",
-		len(accounts), len(inv.VPCs), len(inv.Subnets), len(inv.RouteTables), len(inv.NATGateways), len(inv.InternetGateways),
+		accounts, len(inv.VPCs), len(inv.Subnets), len(inv.RouteTables), len(inv.NATGateways), len(inv.InternetGateways),
 		len(inv.EgressOnlyInternetGateways), len(inv.TransitGateways), len(inv.IAM), len(inv.Errors))
 }
+
+var errUnknownAccount = errors.New("account not found or not enabled")
 
 // filterAccounts keeps the requested accounts, failing on IDs that aren't
 // active in the store so a typo doesn't silently scan nothing.
@@ -88,20 +127,20 @@ func filterAccounts(accounts []store.Account, ids []string) ([]store.Account, er
 		id = strings.TrimSpace(id)
 		i := slices.IndexFunc(accounts, func(a store.Account) bool { return a.AccountID == id })
 		if i < 0 {
-			return nil, fmt.Errorf("account %q not found or not enabled", id)
+			return nil, fmt.Errorf("account %q: %w", id, errUnknownAccount)
 		}
 		out = append(out, accounts[i])
 	}
 	return out, nil
 }
 
-// cancelOnSignal cancels the scan on SIGINT/SIGTERM so in-flight calls abort
-// and partial results still get printed. A second signal exits immediately.
+// cancelOnSignal cancels ctx on SIGINT/SIGTERM so in-flight calls abort and
+// partial results still get delivered. A second signal exits immediately.
 func cancelOnSignal(cancel context.CancelFunc) {
 	sig := make(chan os.Signal, 2)
 	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
 	s := <-sig
-	log.Printf("received %v, cancelling scan (signal again to force exit)", s)
+	log.Printf("received %v, shutting down (signal again to force exit)", s)
 	cancel()
 	<-sig
 	log.Print("forced exit")
