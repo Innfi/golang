@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"os"
@@ -39,16 +40,8 @@ func runServer(path string) {
 	defer cancel()
 	go cancelOnSignal(cancel)
 
-	db, err := sql.Open("pgx", os.Getenv("DATABASE_URL"))
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer db.Close()
-
-	c, err := newCollector(ctx)
-	if err != nil {
-		log.Fatal(err)
-	}
+	s, closeDB := newServer(ctx)
+	defer closeDB()
 
 	ln, err := listenUnix(path)
 	if err != nil {
@@ -56,13 +49,28 @@ func runServer(path string) {
 	}
 	log.Printf("listening on %s", path)
 
+	s.serve(ctx, ln)
+	log.Print("server stopped")
+}
+
+// newServer wires the account store and collector. The returned func
+// closes the database.
+func newServer(ctx context.Context) (*server, func()) {
+	db, err := sql.Open("pgx", os.Getenv("DATABASE_URL"))
+	if err != nil {
+		log.Fatal(err)
+	}
+	c, err := newCollector(ctx)
+	if err != nil {
+		db.Close()
+		log.Fatal(err)
+	}
 	s := &server{
 		accounts:  &store.SQLStore{DB: db},
 		collector: c,
 		scanSlot:  make(chan struct{}, 1),
 	}
-	s.serve(ctx, ln)
-	log.Print("server stopped")
+	return s, func() { db.Close() }
 }
 
 // listenUnix binds path, replacing a stale socket file left by a crashed
@@ -116,19 +124,29 @@ func (s *server) handle(ctx context.Context, conn net.Conn) {
 	stop := context.AfterFunc(ctx, func() { _ = conn.SetReadDeadline(time.Now()) })
 	defer stop()
 
-	sc := bufio.NewScanner(conn)
+	s.serveLines(ctx, conn, conn, new(sync.Mutex))
+}
+
+// serveLines answers newline-delimited requests read from r on w until r
+// ends or fails. busy is held from the moment a line is read until its
+// reply is written, so a caller can wait out an in-flight call.
+func (s *server) serveLines(ctx context.Context, r io.Reader, w io.Writer, busy *sync.Mutex) {
+	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 64<<10), maxLine)
-	enc := json.NewEncoder(conn)
+	enc := json.NewEncoder(w)
 	for sc.Scan() {
 		line := bytes.TrimSpace(sc.Bytes())
 		if len(line) == 0 {
 			continue
 		}
+		busy.Lock()
 		reply := s.dispatch(ctx, line)
-		if reply == nil {
-			continue // only notifications: nothing to send
+		var err error
+		if reply != nil { // nil: only notifications, nothing to send
+			err = enc.Encode(reply)
 		}
-		if err := enc.Encode(reply); err != nil {
+		busy.Unlock()
+		if err != nil {
 			log.Printf("write response: %v", err)
 			return
 		}

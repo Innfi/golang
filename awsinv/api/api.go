@@ -1,6 +1,8 @@
-// Package api is the wire contract of `awsinv -serve`: JSON-RPC 2.0
-// (https://www.jsonrpc.org/specification) over a unix stream socket, one
-// JSON value per line. A line holds a single request or a batch (array);
+// Package api is the wire contract of `awsinv -serve` and `awsinv -stdio`:
+// JSON-RPC 2.0 (https://www.jsonrpc.org/specification) over a unix stream
+// socket (-serve) or stdin/stdout (-stdio), one JSON value per line. With
+// -stdio, stdout carries only responses; logs go to stderr and closing
+// stdin stops the server. A line holds a single request or a batch (array);
 // the reply is one line, or nothing when every request was a notification
 // (no "id").
 //

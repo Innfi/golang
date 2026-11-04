@@ -2,11 +2,14 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -120,4 +123,42 @@ func TestServeRoundTripAndShutdown(t *testing.T) {
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatalf("socket file not removed: %v", err)
 	}
+}
+
+func TestServeStdio(t *testing.T) {
+	s := &server{accounts: fakeStore{}, collector: &inventory.Collector{}, scanSlot: make(chan struct{}, 1)}
+
+	t.Run("eof", func(t *testing.T) {
+		in := strings.NewReader("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"scan\"}\n\n" +
+			"{\"jsonrpc\":\"2.0\",\"method\":\"scan\"}\n" +
+			"{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"nope\"}\n")
+		var out bytes.Buffer
+		s.serveStdio(context.Background(), in, &out)
+
+		lines := strings.Split(strings.TrimSuffix(out.String(), "\n"), "\n")
+		if len(lines) != 2 {
+			t.Fatalf("want 2 reply lines, got %q", out.String())
+		}
+		var r1, r2 api.Response
+		if json.Unmarshal([]byte(lines[0]), &r1) != nil || string(r1.ID) != "1" || r1.Error != nil {
+			t.Fatalf("reply 1: %s", lines[0])
+		}
+		if json.Unmarshal([]byte(lines[1]), &r2) != nil || string(r2.ID) != "2" || r2.Error == nil || r2.Error.Code != api.CodeMethodNotFound {
+			t.Fatalf("reply 2: %s", lines[1])
+		}
+	})
+
+	t.Run("cancel while reading", func(t *testing.T) {
+		pr, pw := io.Pipe() // never written: read blocks like an idle stdin
+		defer pw.Close()
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan struct{})
+		go func() { s.serveStdio(ctx, pr, io.Discard); close(done) }()
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatal("serveStdio did not return after cancel")
+		}
+	})
 }

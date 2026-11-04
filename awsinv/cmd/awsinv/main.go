@@ -28,13 +28,21 @@ import (
 func main() {
 	only := flag.String("account", "", "comma-separated account IDs to scan (default: all active accounts)")
 	socket := flag.String("serve", "", "run as a long-lived server on this unix socket path instead of scanning once")
+	stdio := flag.Bool("stdio", false, "run as a long-lived server reading requests from stdin and writing responses to stdout")
 	flag.Parse()
 
-	if *socket != "" {
-		if *only != "" {
-			log.Fatal("-account cannot be combined with -serve; pass accounts per request")
-		}
+	if *socket != "" && *stdio {
+		log.Fatal("-serve and -stdio are mutually exclusive")
+	}
+	if (*socket != "" || *stdio) && *only != "" {
+		log.Fatal("-account cannot be combined with -serve or -stdio; pass accounts per request")
+	}
+	switch {
+	case *socket != "":
 		runServer(*socket)
+		return
+	case *stdio:
+		runStdio()
 		return
 	}
 	runOnce(*only)
