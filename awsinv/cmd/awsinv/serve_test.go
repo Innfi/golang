@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -21,6 +22,32 @@ import (
 type fakeStore []store.Account
 
 func (f fakeStore) ListActiveAccounts(context.Context) ([]store.Account, error) { return f, nil }
+
+// blockingStore holds ListActiveAccounts until ctx ends, then returns its
+// accounts anyway, so Collect starts with a cancelled ctx and never reaches AWS.
+type blockingStore struct {
+	accounts []store.Account
+	started  chan struct{}
+}
+
+func (b blockingStore) ListActiveAccounts(ctx context.Context) ([]store.Account, error) {
+	close(b.started)
+	<-ctx.Done()
+	return b.accounts, nil
+}
+
+func decodeLines(t *testing.T, out string) []api.Response {
+	t.Helper()
+	var resps []api.Response
+	for _, line := range strings.Split(strings.TrimSuffix(out, "\n"), "\n") {
+		var r api.Response
+		if err := json.Unmarshal([]byte(line), &r); err != nil {
+			t.Fatalf("decode %q: %v", line, err)
+		}
+		resps = append(resps, r)
+	}
+	return resps
+}
 
 func TestServeRoundTripAndShutdown(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "awsinv.sock")
@@ -145,6 +172,77 @@ func TestServeStdio(t *testing.T) {
 		}
 		if json.Unmarshal([]byte(lines[1]), &r2) != nil || string(r2.ID) != "2" || r2.Error == nil || r2.Error.Code != api.CodeMethodNotFound {
 			t.Fatalf("reply 2: %s", lines[1])
+		}
+	})
+
+	t.Run("accounts", func(t *testing.T) {
+		s := &server{
+			accounts: fakeStore{
+				{AccountID: "111111111111", Name: "prod", RoleARN: "arn:aws:iam::1:role/secret-role", ExternalID: "secret-ext", Regions: []string{"us-east-1"}},
+				{AccountID: "222222222222", Name: "dev"},
+			},
+			collector: &inventory.Collector{DefaultRegions: []string{"ap-northeast-2"}},
+			scanSlot:  make(chan struct{}, 1),
+		}
+		var out bytes.Buffer
+		s.serveStdio(context.Background(), strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"accounts"}`+"\n"), &out)
+		if strings.Contains(out.String(), "secret") {
+			t.Fatalf("accounts leaked a role ARN or external ID: %s", out.String())
+		}
+		resps := decodeLines(t, out.String())
+		if len(resps) != 1 || resps[0].Error != nil {
+			t.Fatalf("accounts: %s", out.String())
+		}
+		var res api.AccountsResult
+		if err := json.Unmarshal(resps[0].Result, &res); err != nil {
+			t.Fatal(err)
+		}
+		want := []api.AccountInfo{
+			{AccountID: "111111111111", Name: "prod", Regions: []string{"us-east-1"}},
+			{AccountID: "222222222222", Name: "dev", Regions: []string{"ap-northeast-2"}},
+		}
+		if !reflect.DeepEqual(res.Accounts, want) {
+			t.Fatalf("accounts = %+v, want %+v", res.Accounts, want)
+		}
+	})
+
+	t.Run("empty lists are arrays", func(t *testing.T) {
+		var out bytes.Buffer
+		s.serveStdio(context.Background(), strings.NewReader(
+			// scan first: EOF right after the last line cancels whatever it is.
+			`{"jsonrpc":"2.0","id":1,"method":"scan"}`+"\n"+`{"jsonrpc":"2.0","id":2,"method":"accounts"}`+"\n"), &out)
+		for _, want := range []string{`"accounts":[]`, `"failures":[]`, `"incomplete":false`} {
+			if !strings.Contains(out.String(), want) {
+				t.Fatalf("missing %s in %s", want, out.String())
+			}
+		}
+	})
+
+	t.Run("eof mid-scan", func(t *testing.T) {
+		bs := blockingStore{accounts: []store.Account{{AccountID: "111111111111", Regions: []string{"r1"}}}, started: make(chan struct{})}
+		s := &server{accounts: bs, collector: &inventory.Collector{}, scanSlot: make(chan struct{}, 1)}
+		pr, pw := io.Pipe()
+		var out bytes.Buffer
+		done := make(chan struct{})
+		go func() { s.serveStdio(context.Background(), pr, &out); close(done) }()
+
+		if _, err := pw.Write([]byte(`{"jsonrpc":"2.0","id":7,"method":"scan"}` + "\n")); err != nil {
+			t.Fatal(err)
+		}
+		<-bs.started
+		pw.Close() // what the app does to cancel
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatal("EOF did not stop the scan")
+		}
+		resps := decodeLines(t, out.String())
+		if len(resps) != 1 || resps[0].Error != nil || string(resps[0].ID) != "7" {
+			t.Fatalf("reply: %s", out.String())
+		}
+		var res api.ScanResult
+		if err := json.Unmarshal(resps[0].Result, &res); err != nil || !res.Incomplete || len(res.Failures) == 0 {
+			t.Fatalf("want incomplete with failures, got %s", resps[0].Result)
 		}
 	})
 

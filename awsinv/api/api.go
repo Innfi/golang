@@ -1,13 +1,14 @@
 // Package api is the wire contract of `awsinv -serve` and `awsinv -stdio`:
 // JSON-RPC 2.0 (https://www.jsonrpc.org/specification) over a unix stream
 // socket (-serve) or stdin/stdout (-stdio), one JSON value per line. With
-// -stdio, stdout carries only responses; logs go to stderr and closing
-// stdin stops the server. A line holds a single request or a batch (array);
+// -stdio, stdout carries only responses; logs go to stderr, and closing
+// stdin stops the server: a scan in progress is cancelled and still replies
+// (with Incomplete set) before the process exits 0. A line holds a single request or a batch (array);
 // the reply is one line, or nothing when every request was a notification
 // (no "id").
 //
 //	-> {"jsonrpc":"2.0","id":1,"method":"scan","params":{"accounts":["111111111111"]}}
-//	<- {"jsonrpc":"2.0","id":1,"result":{"inventory":{...},"failures":[...]}}
+//	<- {"jsonrpc":"2.0","id":1,"result":{"incomplete":false,"inventory":{...},"failures":[...]}}
 //	<- {"jsonrpc":"2.0","id":1,"error":{"code":-32602,"message":"..."}}
 package api
 
@@ -74,8 +75,11 @@ type ScanParams struct {
 // by server shutdown or timeout still returns a result: what finished, and
 // a failure for each target that didn't.
 type ScanResult struct {
-	Inventory inventory.Inventory `json:"inventory"`
-	Failures  []ScanFailure       `json:"failures"`
+	// Incomplete is set when the scan was cut short (shutdown, closed stdin
+	// or timeout). Clients should not treat it as the full inventory.
+	Incomplete bool                `json:"incomplete"`
+	Inventory  inventory.Inventory `json:"inventory"`
+	Failures   []ScanFailure       `json:"failures"`
 }
 
 // ScanFailure is one (resource, account, region) that could not be scanned.
@@ -84,4 +88,21 @@ type ScanFailure struct {
 	AccountID string `json:"accountId"`
 	Region    string `json:"region"`
 	Message   string `json:"message"`
+}
+
+// MethodAccounts lists the active accounts. No params. Result:
+// AccountsResult.
+const MethodAccounts = "accounts"
+
+// AccountsResult never carries role ARNs or external IDs.
+type AccountsResult struct {
+	Accounts []AccountInfo `json:"accounts"`
+}
+
+// AccountInfo is the public part of an account. Regions are the ones a scan
+// covers: the account's own, or the server default when it has none.
+type AccountInfo struct {
+	AccountID string   `json:"accountId"`
+	Name      string   `json:"name"`
+	Regions   []string `json:"regions"`
 }

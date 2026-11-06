@@ -12,6 +12,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"slices"
 	"sync"
 	"time"
 
@@ -124,29 +125,20 @@ func (s *server) handle(ctx context.Context, conn net.Conn) {
 	stop := context.AfterFunc(ctx, func() { _ = conn.SetReadDeadline(time.Now()) })
 	defer stop()
 
-	s.serveLines(ctx, conn, conn, new(sync.Mutex))
+	s.serveLines(ctx, conn, conn)
 }
 
 // serveLines answers newline-delimited requests read from r on w until r
-// ends or fails. busy is held from the moment a line is read until its
-// reply is written, so a caller can wait out an in-flight call.
-func (s *server) serveLines(ctx context.Context, r io.Reader, w io.Writer, busy *sync.Mutex) {
-	sc := bufio.NewScanner(r)
-	sc.Buffer(make([]byte, 0, 64<<10), maxLine)
+// ends or fails.
+func (s *server) serveLines(ctx context.Context, r io.Reader, w io.Writer) {
+	sc := newLineScanner(r)
 	enc := json.NewEncoder(w)
 	for sc.Scan() {
 		line := bytes.TrimSpace(sc.Bytes())
 		if len(line) == 0 {
 			continue
 		}
-		busy.Lock()
-		reply := s.dispatch(ctx, line)
-		var err error
-		if reply != nil { // nil: only notifications, nothing to send
-			err = enc.Encode(reply)
-		}
-		busy.Unlock()
-		if err != nil {
+		if err := s.reply(ctx, enc, line); err != nil {
 			log.Printf("write response: %v", err)
 			return
 		}
@@ -154,6 +146,21 @@ func (s *server) serveLines(ctx context.Context, r io.Reader, w io.Writer, busy 
 	if err := sc.Err(); err != nil && ctx.Err() == nil {
 		log.Printf("read request: %v", err)
 	}
+}
+
+func newLineScanner(r io.Reader) *bufio.Scanner {
+	sc := bufio.NewScanner(r)
+	sc.Buffer(make([]byte, 0, 64<<10), maxLine)
+	return sc
+}
+
+// reply dispatches one line and writes the reply, if there is one.
+func (s *server) reply(ctx context.Context, enc *json.Encoder, line []byte) error {
+	reply := s.dispatch(ctx, line)
+	if reply == nil { // only notifications, nothing to send
+		return nil
+	}
+	return enc.Encode(reply)
 }
 
 // dispatch handles one line: a request or a batch. It returns the value to
@@ -220,6 +227,11 @@ func (s *server) invoke(ctx context.Context, req api.Request) (any, *api.Error) 
 			return nil, &api.Error{Code: api.CodeInvalidParams, Message: "invalid params: " + err.Error()}
 		}
 		return s.scan(ctx, p)
+	case api.MethodAccounts:
+		if err := decodeParams(req.Params, &struct{}{}); err != nil {
+			return nil, &api.Error{Code: api.CodeInvalidParams, Message: "invalid params: " + err.Error()}
+		}
+		return s.listAccounts(ctx)
 	default:
 		return nil, &api.Error{Code: api.CodeMethodNotFound, Message: "method not found: " + req.Method}
 	}
@@ -286,5 +298,42 @@ func (s *server) scan(ctx context.Context, p api.ScanParams) (*api.ScanResult, *
 		failures[i] = api.ScanFailure{Resource: e.Resource, AccountID: e.AccountID, Region: e.Region, Message: e.Err.Error()}
 	}
 	logSummary(len(accounts), inv)
-	return &api.ScanResult{Inventory: inv, Failures: failures}, nil
+	return &api.ScanResult{Incomplete: cutShort(ctx, inv.Errors), Inventory: inv, Failures: failures}, nil
+}
+
+// cutShort reports whether ctx ending stopped some target. A scan that
+// finished just before cancel is still complete.
+func cutShort(ctx context.Context, errs []inventory.ScanError) bool {
+	if ctx.Err() == nil {
+		return false
+	}
+	return slices.ContainsFunc(errs, func(e inventory.ScanError) bool {
+		return errors.Is(e.Err, context.Canceled) || errors.Is(e.Err, context.DeadlineExceeded)
+	})
+}
+
+// accountsTimeout bounds the accounts query. It does not follow server
+// shutdown: the call is short, and a client that sends it and then closes
+// stdin still expects the answer.
+const accountsTimeout = 30 * time.Second
+
+func (s *server) listAccounts(ctx context.Context) (*api.AccountsResult, *api.Error) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), accountsTimeout)
+	defer cancel()
+
+	accounts, err := s.accounts.ListActiveAccounts(ctx)
+	if err != nil {
+		log.Printf("load accounts: %v", err)
+		return nil, &api.Error{Code: api.CodeInternalError, Message: "load accounts: " + err.Error()}
+	}
+	// Field by field: RoleARN and ExternalID must never leave the server.
+	out := make([]api.AccountInfo, len(accounts))
+	for i, a := range accounts {
+		regions := a.Regions
+		if len(regions) == 0 {
+			regions = s.collector.DefaultRegions
+		}
+		out[i] = api.AccountInfo{AccountID: a.AccountID, Name: a.Name, Regions: append([]string{}, regions...)}
+	}
+	return &api.AccountsResult{Accounts: out}, nil
 }
