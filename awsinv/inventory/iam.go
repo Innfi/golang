@@ -6,8 +6,6 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/iam"
-
-	"github.com/innfi/awsinv/store"
 )
 
 // IAMPrincipal is a flattened IAM user or role. IAM is global, so each
@@ -20,15 +18,11 @@ type IAMPrincipal struct {
 	ARN        string
 	Path       string
 	CreateDate time.Time
+	ScannedAt  time.Time // see Inventory
 }
 
-func (c *Collector) iamIn(ctx context.Context, acct store.Account, _ string) ([]IAMPrincipal, error) {
-	// Any region in the account's partition resolves to the global IAM endpoint.
-	region := "us-east-1"
-	if r := c.regionsFor(acct); len(r) > 0 {
-		region = r[0]
-	}
-	client := iam.NewFromConfig(c.Creds.ConfigFor(acct, region))
+func (c *Collector) iamIn(ctx context.Context, t target) ([]IAMPrincipal, error) {
+	acct, client := t.acct, iam.NewFromConfig(t.cfg)
 
 	var out []IAMPrincipal
 	users := iam.NewListUsersPaginator(client, &iam.ListUsersInput{})
@@ -40,6 +34,7 @@ func (c *Collector) iamIn(ctx context.Context, acct store.Account, _ string) ([]
 		for _, u := range page.Users {
 			out = append(out, IAMPrincipal{
 				AccountID:  acct.AccountID,
+				ScannedAt:  t.scannedAt,
 				Kind:       "user",
 				Name:       aws.ToString(u.UserName),
 				ID:         aws.ToString(u.UserId),
@@ -59,6 +54,7 @@ func (c *Collector) iamIn(ctx context.Context, acct store.Account, _ string) ([]
 		for _, r := range page.Roles {
 			out = append(out, IAMPrincipal{
 				AccountID:  acct.AccountID,
+				ScannedAt:  t.scannedAt,
 				Kind:       "role",
 				Name:       aws.ToString(r.RoleName),
 				ID:         aws.ToString(r.RoleId),

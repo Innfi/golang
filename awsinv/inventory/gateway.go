@@ -2,12 +2,11 @@ package inventory
 
 import (
 	"context"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/aws/aws-sdk-go-v2/service/ec2/types"
-
-	"github.com/innfi/awsinv/store"
 )
 
 // NATGateway is a flattened NAT gateway. AWS keeps listing deleted ones for a
@@ -24,6 +23,7 @@ type NATGateway struct {
 	Addresses        []NATGatewayAddress
 	Name             string
 	Tags             map[string]string
+	ScannedAt        time.Time // see Inventory
 }
 
 // NATGatewayAddress is one IP address of a NAT gateway.
@@ -47,6 +47,7 @@ type InternetGateway struct {
 	Attachments       []GatewayAttachment
 	Name              string
 	Tags              map[string]string
+	ScannedAt         time.Time // see Inventory
 }
 
 // EgressOnlyInternetGateway is a flattened egress-only internet gateway.
@@ -57,6 +58,7 @@ type EgressOnlyInternetGateway struct {
 	Attachments                 []GatewayAttachment
 	Name                        string
 	Tags                        map[string]string
+	ScannedAt                   time.Time // see Inventory
 }
 
 // GatewayAttachment links an internet or egress-only internet gateway to a VPC.
@@ -80,10 +82,11 @@ type TransitGateway struct {
 	State            string
 	Name             string
 	Tags             map[string]string
+	ScannedAt        time.Time // see Inventory
 }
 
-func (c *Collector) natGatewaysIn(ctx context.Context, acct store.Account, region string) ([]NATGateway, error) {
-	client := ec2.NewFromConfig(c.Creds.ConfigFor(acct, region))
+func (c *Collector) natGatewaysIn(ctx context.Context, t target) ([]NATGateway, error) {
+	acct, region, client := t.acct, t.region, t.ec2
 
 	var out []NATGateway
 	p := ec2.NewDescribeNatGatewaysPaginator(client, &ec2.DescribeNatGatewaysInput{})
@@ -97,6 +100,7 @@ func (c *Collector) natGatewaysIn(ctx context.Context, acct store.Account, regio
 			gw := NATGateway{
 				AccountID:        acct.AccountID,
 				Region:           region,
+				ScannedAt:        t.scannedAt,
 				NATGatewayID:     aws.ToString(n.NatGatewayId),
 				VpcID:            aws.ToString(n.VpcId),
 				SubnetID:         aws.ToString(n.SubnetId),
@@ -123,8 +127,8 @@ func (c *Collector) natGatewaysIn(ctx context.Context, acct store.Account, regio
 	return out, nil
 }
 
-func (c *Collector) internetGatewaysIn(ctx context.Context, acct store.Account, region string) ([]InternetGateway, error) {
-	client := ec2.NewFromConfig(c.Creds.ConfigFor(acct, region))
+func (c *Collector) internetGatewaysIn(ctx context.Context, t target) ([]InternetGateway, error) {
+	acct, region, client := t.acct, t.region, t.ec2
 
 	var out []InternetGateway
 	p := ec2.NewDescribeInternetGatewaysPaginator(client, &ec2.DescribeInternetGatewaysInput{})
@@ -138,6 +142,7 @@ func (c *Collector) internetGatewaysIn(ctx context.Context, acct store.Account, 
 			out = append(out, InternetGateway{
 				AccountID:         acct.AccountID,
 				Region:            region,
+				ScannedAt:         t.scannedAt,
 				InternetGatewayID: aws.ToString(g.InternetGatewayId),
 				OwnerID:           aws.ToString(g.OwnerId),
 				Attachments:       flattenAttachments(g.Attachments),
@@ -149,8 +154,8 @@ func (c *Collector) internetGatewaysIn(ctx context.Context, acct store.Account, 
 	return out, nil
 }
 
-func (c *Collector) egressOnlyInternetGatewaysIn(ctx context.Context, acct store.Account, region string) ([]EgressOnlyInternetGateway, error) {
-	client := ec2.NewFromConfig(c.Creds.ConfigFor(acct, region))
+func (c *Collector) egressOnlyInternetGatewaysIn(ctx context.Context, t target) ([]EgressOnlyInternetGateway, error) {
+	acct, region, client := t.acct, t.region, t.ec2
 
 	var out []EgressOnlyInternetGateway
 	p := ec2.NewDescribeEgressOnlyInternetGatewaysPaginator(client, &ec2.DescribeEgressOnlyInternetGatewaysInput{})
@@ -164,6 +169,7 @@ func (c *Collector) egressOnlyInternetGatewaysIn(ctx context.Context, acct store
 			out = append(out, EgressOnlyInternetGateway{
 				AccountID:                   acct.AccountID,
 				Region:                      region,
+				ScannedAt:                   t.scannedAt,
 				EgressOnlyInternetGatewayID: aws.ToString(g.EgressOnlyInternetGatewayId),
 				Attachments:                 flattenAttachments(g.Attachments),
 				Name:                        tags["Name"],
@@ -174,8 +180,8 @@ func (c *Collector) egressOnlyInternetGatewaysIn(ctx context.Context, acct store
 	return out, nil
 }
 
-func (c *Collector) transitGatewaysIn(ctx context.Context, acct store.Account, region string) ([]TransitGateway, error) {
-	client := ec2.NewFromConfig(c.Creds.ConfigFor(acct, region))
+func (c *Collector) transitGatewaysIn(ctx context.Context, t target) ([]TransitGateway, error) {
+	acct, region, client := t.acct, t.region, t.ec2
 
 	var out []TransitGateway
 	p := ec2.NewDescribeTransitGatewaysPaginator(client, &ec2.DescribeTransitGatewaysInput{})
@@ -189,6 +195,7 @@ func (c *Collector) transitGatewaysIn(ctx context.Context, acct store.Account, r
 			gw := TransitGateway{
 				AccountID:        acct.AccountID,
 				Region:           region,
+				ScannedAt:        t.scannedAt,
 				TransitGatewayID: aws.ToString(g.TransitGatewayId),
 				ARN:              aws.ToString(g.TransitGatewayArn),
 				OwnerID:          aws.ToString(g.OwnerId),

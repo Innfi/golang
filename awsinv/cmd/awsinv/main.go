@@ -120,9 +120,9 @@ func newCollector(ctx context.Context) (*inventory.Collector, error) {
 }
 
 func logSummary(accounts int, inv inventory.Inventory) {
-	log.Printf("accounts=%d vpcs=%d subnets=%d routetables=%d natgateways=%d internetgateways=%d egressonlyinternetgateways=%d transitgateways=%d iam=%d failures=%d",
+	log.Printf("accounts=%d vpcs=%d subnets=%d routetables=%d natgateways=%d internetgateways=%d egressonlyinternetgateways=%d transitgateways=%d instances=%d volumes=%d iam=%d failures=%d",
 		accounts, len(inv.VPCs), len(inv.Subnets), len(inv.RouteTables), len(inv.NATGateways), len(inv.InternetGateways),
-		len(inv.EgressOnlyInternetGateways), len(inv.TransitGateways), len(inv.IAM), len(inv.Errors))
+		len(inv.EgressOnlyInternetGateways), len(inv.TransitGateways), len(inv.Instances), len(inv.Volumes), len(inv.IAM), len(inv.Errors))
 }
 
 var errUnknownAccount = errors.New("account not found or not enabled")

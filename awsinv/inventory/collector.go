@@ -4,14 +4,24 @@ package inventory
 import (
 	"context"
 	"fmt"
-	"slices"
 	"sync"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
 
 	"github.com/innfi/awsinv/awscreds"
 	"github.com/innfi/awsinv/store"
 )
 
 // Inventory is everything one Collect run found.
+//
+// It is not a point-in-time snapshot: AWS has no cross-API snapshot, so each
+// resource type is read at a slightly different moment. All types of one
+// (account, region) are scanned back-to-back to keep that gap small, and every
+// item carries ScannedAt, the start of its own type's scan. References between
+// items (volume -> instance, route -> NAT gateway, ...) can still dangle when a
+// resource was created or deleted in between; treat them as soft.
 type Inventory struct {
 	VPCs                       []VPC
 	Subnets                    []Subnet
@@ -20,13 +30,15 @@ type Inventory struct {
 	InternetGateways           []InternetGateway
 	EgressOnlyInternetGateways []EgressOnlyInternetGateway
 	TransitGateways            []TransitGateway
+	Instances                  []Instance
+	Volumes                    []Volume
 	IAM                        []IAMPrincipal
 	Errors                     []ScanError `json:"-"`
 }
 
 // ScanError records a per-target failure without aborting the whole run.
 type ScanError struct {
-	Resource  string // "vpc", "subnet", "routetable", "natgateway", "iam", ...
+	Resource  string // "vpc", "subnet", "routetable", "natgateway", "ec2", "ebs", "iam", ...
 	AccountID string
 	Region    string
 	Err       error
@@ -37,48 +49,125 @@ func (e ScanError) Error() string {
 }
 
 // Collector scans accounts/regions with bounded global and per-account concurrency.
+// The unit of concurrency is a target: one (account, region) pair, or one
+// account's global (IAM) scan. A target runs its resource types in sequence.
 type Collector struct {
 	Creds              *awscreds.Factory
 	DefaultRegions     []string // used when an account row has no regions
-	Concurrency        int      // max parallel scans
-	AccountConcurrency int      // max parallel scans per account; 0 => Concurrency
+	Concurrency        int      // max parallel targets
+	AccountConcurrency int      // max parallel targets per account; 0 => Concurrency
+
+	now func() time.Time // for tests; nil => time.Now
 }
 
-// Collect fetches every resource type for the accounts. All types share one
-// set of limits, so AccountConcurrency caps an account across VPC+IAM+...
-// One bad account (revoked role, SCP deny, opt-in region disabled) is
-// reported, not fatal. Cancelling ctx stops queued scans; they are reported
-// with ctx.Err().
+// target is one (account, region) pair being scanned. region is globalRegion
+// for an account's global scan, and ec2 is nil there.
+type target struct {
+	acct      store.Account
+	region    string
+	cfg       aws.Config
+	ec2       *ec2.Client
+	scannedAt time.Time // start of the current resource type's scan
+}
+
+// scanner reads one resource type of a target. commit stores the result and
+// runs with the Inventory lock held.
+type scanner struct {
+	resource string
+	scan     func(context.Context, target) (commit func(), err error)
+}
+
+// into adapts a typed scan func that appends to dst.
+func into[T any](resource string, dst *[]T, scan func(context.Context, target) ([]T, error)) scanner {
+	return scanner{resource, func(ctx context.Context, t target) (func(), error) {
+		got, err := scan(ctx, t)
+		if err != nil {
+			return nil, err
+		}
+		return func() { *dst = append(*dst, got...) }, nil
+	}}
+}
+
+// Collect fetches every resource type for the accounts. One bad account
+// (revoked role, SCP deny, opt-in region disabled) is reported, not fatal.
+// Cancelling ctx stops queued and unstarted scans; they are reported with
+// ctx.Err().
 func (c *Collector) Collect(ctx context.Context, accounts []store.Account) Inventory {
-	l := c.newLimiter()
-	var (
-		inv                                  Inventory
-		wg                                   sync.WaitGroup
-		vpcErrs, subnetErrs, rtErrs, iamErrs []ScanError
-		natErrs, igwErrs, eigwErrs, tgwErrs  []ScanError
-	)
+	var inv Inventory
 	// New resource types: add a field to Inventory and a line here.
-	wg.Go(func() { inv.VPCs, vpcErrs = collect(ctx, l, "vpc", accounts, c.regionsFor, c.vpcsIn) })
-	wg.Go(func() { inv.Subnets, subnetErrs = collect(ctx, l, "subnet", accounts, c.regionsFor, c.subnetsIn) })
-	wg.Go(func() {
-		inv.RouteTables, rtErrs = collect(ctx, l, "routetable", accounts, c.regionsFor, c.routeTablesIn)
-	})
-	wg.Go(func() {
-		inv.NATGateways, natErrs = collect(ctx, l, "natgateway", accounts, c.regionsFor, c.natGatewaysIn)
-	})
-	wg.Go(func() {
-		inv.InternetGateways, igwErrs = collect(ctx, l, "internetgateway", accounts, c.regionsFor, c.internetGatewaysIn)
-	})
-	wg.Go(func() {
-		inv.EgressOnlyInternetGateways, eigwErrs = collect(ctx, l, "egressonlyinternetgateway", accounts, c.regionsFor, c.egressOnlyInternetGatewaysIn)
-	})
-	wg.Go(func() {
-		inv.TransitGateways, tgwErrs = collect(ctx, l, "transitgateway", accounts, c.regionsFor, c.transitGatewaysIn)
-	})
-	wg.Go(func() { inv.IAM, iamErrs = collect(ctx, l, "iam", accounts, global, c.iamIn) })
+	regional := []scanner{
+		into("vpc", &inv.VPCs, c.vpcsIn),
+		into("subnet", &inv.Subnets, c.subnetsIn),
+		into("routetable", &inv.RouteTables, c.routeTablesIn),
+		into("natgateway", &inv.NATGateways, c.natGatewaysIn),
+		into("internetgateway", &inv.InternetGateways, c.internetGatewaysIn),
+		into("egressonlyinternetgateway", &inv.EgressOnlyInternetGateways, c.egressOnlyInternetGatewaysIn),
+		into("transitgateway", &inv.TransitGateways, c.transitGatewaysIn),
+		into("ec2", &inv.Instances, c.instancesIn),
+		into("ebs", &inv.Volumes, c.volumesIn),
+	}
+	global := []scanner{
+		into("iam", &inv.IAM, c.iamIn),
+	}
+
+	var (
+		l  = c.newLimiter()
+		mu sync.Mutex // guards inv
+		wg sync.WaitGroup
+	)
+	for _, acct := range accounts {
+		for _, region := range c.regionsFor(acct) {
+			wg.Go(func() { c.scanTarget(ctx, l, &mu, &inv, acct, region, regional) })
+		}
+		wg.Go(func() { c.scanTarget(ctx, l, &mu, &inv, acct, globalRegion, global) })
+	}
 	wg.Wait()
-	inv.Errors = slices.Concat(vpcErrs, subnetErrs, rtErrs, natErrs, igwErrs, eigwErrs, tgwErrs, iamErrs)
 	return inv
+}
+
+// scanTarget holds one limiter slot for the whole target, so its resource
+// types run back-to-back instead of interleaving with other targets.
+func (c *Collector) scanTarget(
+	ctx context.Context, l *limiter, mu *sync.Mutex, inv *Inventory,
+	acct store.Account, region string, scans []scanner,
+) {
+	fail := func(resource string, err error) {
+		mu.Lock()
+		defer mu.Unlock()
+		inv.Errors = append(inv.Errors, ScanError{resource, acct.AccountID, region, err}) // keep going
+	}
+
+	release, err := l.acquire(ctx, acct.AccountID)
+	if err != nil {
+		for _, s := range scans {
+			fail(s.resource, err)
+		}
+		return
+	}
+	defer release()
+
+	t := target{acct: acct, region: region}
+	if region == globalRegion {
+		t.cfg = c.Creds.ConfigFor(acct, c.globalEndpointRegion(acct))
+	} else {
+		t.cfg = c.Creds.ConfigFor(acct, region)
+		t.ec2 = ec2.NewFromConfig(t.cfg)
+	}
+	for _, s := range scans {
+		if err := ctx.Err(); err != nil { // don't start the rest after cancel
+			fail(s.resource, err)
+			continue
+		}
+		t.scannedAt = c.clock()
+		commit, err := s.scan(ctx, t)
+		if err != nil {
+			fail(s.resource, err)
+			continue
+		}
+		mu.Lock()
+		commit()
+		mu.Unlock()
+	}
 }
 
 func (c *Collector) regionsFor(acct store.Account) []string {
@@ -88,46 +177,23 @@ func (c *Collector) regionsFor(acct store.Account) []string {
 	return acct.Regions
 }
 
-// global targets for resources that are scanned once per account.
-func global(store.Account) []string { return []string{globalRegion} }
+// globalEndpointRegion picks the region used to reach a global service. Any
+// region in the account's partition resolves to the global IAM endpoint.
+func (c *Collector) globalEndpointRegion(acct store.Account) string {
+	if r := c.regionsFor(acct); len(r) > 0 {
+		return r[0]
+	}
+	return "us-east-1"
+}
+
+func (c *Collector) clock() time.Time {
+	if c.now != nil {
+		return c.now()
+	}
+	return time.Now()
+}
 
 const globalRegion = "global"
-
-// collect runs scan once per (account, target) pair, where targets lists the
-// regions (or "global") to scan for an account.
-func collect[T any](
-	ctx context.Context,
-	l *limiter,
-	resource string,
-	accounts []store.Account,
-	targets func(store.Account) []string,
-	scan func(context.Context, store.Account, string) ([]T, error),
-) ([]T, []ScanError) {
-	var (
-		mu    sync.Mutex
-		wg    sync.WaitGroup
-		items []T
-		errs  []ScanError
-	)
-	for _, acct := range accounts {
-		for _, region := range targets(acct) {
-			wg.Go(func() {
-				got, err := scanLimited(ctx, l, acct.AccountID, func(ctx context.Context) ([]T, error) {
-					return scan(ctx, acct, region)
-				})
-				mu.Lock()
-				defer mu.Unlock()
-				if err != nil {
-					errs = append(errs, ScanError{resource, acct.AccountID, region, err}) // keep going
-					return
-				}
-				items = append(items, got...)
-			})
-		}
-	}
-	wg.Wait()
-	return items, errs
-}
 
 // limiter holds the global semaphore and one semaphore per account.
 type limiter struct {
@@ -163,19 +229,18 @@ func (l *limiter) forAccount(id string) chan struct{} {
 	return s
 }
 
-// scanLimited takes the account slot before the global one, so a goroutine
+// acquire takes the account slot before the global one, so a goroutine
 // waiting on a busy account doesn't hold a global slot other accounts could use.
-func scanLimited[T any](ctx context.Context, l *limiter, accountID string, scan func(context.Context) ([]T, error)) ([]T, error) {
+func (l *limiter) acquire(ctx context.Context, accountID string) (release func(), err error) {
 	acctSem := l.forAccount(accountID)
 	if err := acquire(ctx, acctSem); err != nil {
 		return nil, err
 	}
-	defer func() { <-acctSem }()
 	if err := acquire(ctx, l.global); err != nil {
+		<-acctSem
 		return nil, err
 	}
-	defer func() { <-l.global }()
-	return scan(ctx)
+	return func() { <-l.global; <-acctSem }, nil
 }
 
 func acquire(ctx context.Context, sem chan struct{}) error {

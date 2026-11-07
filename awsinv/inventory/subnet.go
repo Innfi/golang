@@ -2,11 +2,10 @@ package inventory
 
 import (
 	"context"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
-
-	"github.com/innfi/awsinv/store"
 )
 
 // Subnet is a flattened EC2 subnet.
@@ -23,10 +22,11 @@ type Subnet struct {
 	State            string
 	Name             string
 	Tags             map[string]string
+	ScannedAt        time.Time // see Inventory
 }
 
-func (c *Collector) subnetsIn(ctx context.Context, acct store.Account, region string) ([]Subnet, error) {
-	client := ec2.NewFromConfig(c.Creds.ConfigFor(acct, region))
+func (c *Collector) subnetsIn(ctx context.Context, t target) ([]Subnet, error) {
+	acct, region, client := t.acct, t.region, t.ec2
 
 	var out []Subnet
 	p := ec2.NewDescribeSubnetsPaginator(client, &ec2.DescribeSubnetsInput{})
@@ -40,6 +40,7 @@ func (c *Collector) subnetsIn(ctx context.Context, acct store.Account, region st
 			out = append(out, Subnet{
 				AccountID:        acct.AccountID,
 				Region:           region,
+				ScannedAt:        t.scannedAt,
 				SubnetID:         aws.ToString(s.SubnetId),
 				VpcID:            aws.ToString(s.VpcId),
 				CIDR:             aws.ToString(s.CidrBlock),

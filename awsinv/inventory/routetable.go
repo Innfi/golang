@@ -4,12 +4,11 @@ import (
 	"cmp"
 	"context"
 	"slices"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/aws/aws-sdk-go-v2/service/ec2/types"
-
-	"github.com/innfi/awsinv/store"
 )
 
 // RouteTable is a flattened VPC route table.
@@ -23,6 +22,7 @@ type RouteTable struct {
 	Routes       []Route
 	Name         string
 	Tags         map[string]string
+	ScannedAt    time.Time // see Inventory
 }
 
 // Association links a route table to the main slot, a subnet or a gateway.
@@ -42,8 +42,8 @@ type Route struct {
 	Origin      string
 }
 
-func (c *Collector) routeTablesIn(ctx context.Context, acct store.Account, region string) ([]RouteTable, error) {
-	client := ec2.NewFromConfig(c.Creds.ConfigFor(acct, region))
+func (c *Collector) routeTablesIn(ctx context.Context, t target) ([]RouteTable, error) {
+	acct, region, client := t.acct, t.region, t.ec2
 
 	var out []RouteTable
 	p := ec2.NewDescribeRouteTablesPaginator(client, &ec2.DescribeRouteTablesInput{})
@@ -57,6 +57,7 @@ func (c *Collector) routeTablesIn(ctx context.Context, acct store.Account, regio
 			table := RouteTable{
 				AccountID:    acct.AccountID,
 				Region:       region,
+				ScannedAt:    t.scannedAt,
 				RouteTableID: aws.ToString(rt.RouteTableId),
 				VpcID:        aws.ToString(rt.VpcId),
 				Name:         tags["Name"],

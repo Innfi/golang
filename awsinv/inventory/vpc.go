@@ -2,12 +2,11 @@ package inventory
 
 import (
 	"context"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/aws/aws-sdk-go-v2/service/ec2/types"
-
-	"github.com/innfi/awsinv/store"
 )
 
 // VPC is our own flattened shape — don't leak SDK types into storage/APIs.
@@ -20,10 +19,11 @@ type VPC struct {
 	State     string
 	Name      string
 	Tags      map[string]string
+	ScannedAt time.Time // see Inventory
 }
 
-func (c *Collector) vpcsIn(ctx context.Context, acct store.Account, region string) ([]VPC, error) {
-	client := ec2.NewFromConfig(c.Creds.ConfigFor(acct, region))
+func (c *Collector) vpcsIn(ctx context.Context, t target) ([]VPC, error) {
+	acct, region, client := t.acct, t.region, t.ec2
 
 	var out []VPC
 	p := ec2.NewDescribeVpcsPaginator(client, &ec2.DescribeVpcsInput{})
@@ -37,6 +37,7 @@ func (c *Collector) vpcsIn(ctx context.Context, acct store.Account, region strin
 			out = append(out, VPC{
 				AccountID: acct.AccountID,
 				Region:    region,
+				ScannedAt: t.scannedAt,
 				VpcID:     aws.ToString(v.VpcId),
 				CIDR:      aws.ToString(v.CidrBlock),
 				IsDefault: aws.ToBool(v.IsDefault),
