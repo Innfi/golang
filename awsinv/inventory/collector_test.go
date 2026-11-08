@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -20,11 +21,16 @@ import (
 	"github.com/innfi/awsinv/store"
 )
 
-// fakeAWS serves STS + EC2 + IAM on one endpoint. Account 222222222222's role
+// fakeAWS serves STS + EC2 + IAM + EKS on one endpoint. Account 222222222222's role
 // is "broken". onCall, if set, runs inside each Describe*/ListUsers call with the
-// caller account and target (its region, or "global" for IAM).
+// caller account and target (its region, or "global" for IAM). For EKS it runs
+// on ListClusters only, so each resource type counts as one call.
 func fakeAWS(t *testing.T, assumeCalls *atomic.Int32, onCall func(acct, target string)) *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/clusters") {
+			fakeEKS(t, w, r, onCall)
+			return
+		}
 		_ = r.ParseForm()
 		switch r.Form.Get("Action") {
 		case "AssumeRole":
@@ -185,6 +191,45 @@ func fakeAWS(t *testing.T, assumeCalls *atomic.Int32, onCall func(acct, target s
 	}))
 }
 
+// fakeEKS serves the EKS REST-JSON API: one cluster per target with two add-ons
+// listed, one of which ("gone") was deleted before it could be described.
+func fakeEKS(t *testing.T, w http.ResponseWriter, r *http.Request, onCall func(acct, target string)) {
+	acct, region := caller(r)
+	id := acct + "-" + region
+	w.Header().Set("Content-Type", "application/json")
+	switch r.URL.Path {
+	case "/clusters":
+		if onCall != nil {
+			onCall(acct, region)
+		}
+		fmt.Fprintf(w, `{"clusters":["k-%s"]}`, id)
+	case "/clusters/k-" + id:
+		fmt.Fprintf(w, `{"cluster":{
+			"name":"k-%[1]s","arn":"arn:eks-%[1]s","version":"1.31","platformVersion":"eks.12","status":"ACTIVE",
+			"endpoint":"https://k-%[1]s.eks","roleArn":"arn:aws:iam::%[2]s:role/eks","createdAt":1704164645,
+			"resourcesVpcConfig":{"vpcId":"vpc-%[1]s","subnetIds":["subnet-%[1]s"],"securityGroupIds":["sg-1"],
+				"clusterSecurityGroupId":"sg-eks","endpointPublicAccess":true,"endpointPrivateAccess":false,
+				"publicAccessCidrs":["0.0.0.0/0"]},
+			"accessConfig":{"authenticationMode":"API_AND_CONFIG_MAP"},
+			"tags":{"team":"platform"}}}`, id, acct)
+	case "/clusters/k-" + id + "/addons":
+		fmt.Fprint(w, `{"addons":["vpc-cni","gone"]}`)
+	case "/clusters/k-" + id + "/addons/vpc-cni":
+		fmt.Fprintf(w, `{"addon":{
+			"addonName":"vpc-cni","clusterName":"k-%[1]s","addonArn":"arn:addon-%[1]s","addonVersion":"v1.19.0-eksbuild.1",
+			"status":"DEGRADED","serviceAccountRoleArn":"arn:aws:iam::%[2]s:role/cni","owner":"aws","publisher":"eks",
+			"createdAt":1704164700,"modifiedAt":1704164800,
+			"health":{"issues":[{"code":"InsufficientNumberOfReplicas","message":"1/2 ready","resourceIds":["aws-node"]}]}}}`, id, acct)
+	case "/clusters/k-" + id + "/addons/gone":
+		w.Header().Set("X-Amzn-Errortype", "ResourceNotFoundException")
+		w.WriteHeader(http.StatusNotFound)
+		fmt.Fprint(w, `{"message":"No addon: gone found in cluster"}`)
+	default:
+		t.Errorf("unexpected EKS path %q", r.URL.Path)
+		w.WriteHeader(http.StatusNotFound)
+	}
+}
+
 // caller reads the SigV4 header: Credential=AK<acct>/<date>/<region>/<svc>/aws4_request
 func caller(r *http.Request) (acct, region string) {
 	cred := strings.Split(strings.Split(r.Header.Get("Authorization"), "Credential=")[1], "/")
@@ -297,8 +342,12 @@ func TestCollect_MultiAccount(t *testing.T) {
 	for _, v := range inv.Volumes {
 		gotVol[v.VolumeID] = v
 	}
-	if len(inv.Instances) != 3 || len(inv.Volumes) != 3 {
-		t.Errorf("want 3 instances, 3 volumes, got %d, %d", len(inv.Instances), len(inv.Volumes))
+	gotCluster := map[string]Cluster{}
+	for _, k := range inv.Clusters {
+		gotCluster[k.Name] = k
+	}
+	if len(inv.Instances) != 3 || len(inv.Volumes) != 3 || len(inv.Clusters) != 3 {
+		t.Errorf("want 3 instances, 3 volumes, 3 clusters, got %d, %d, %d", len(inv.Instances), len(inv.Volumes), len(inv.Clusters))
 	}
 	for _, target := range []struct{ acct, region string }{
 		{"111111111111", "ap-northeast-2"}, {"111111111111", "us-east-1"}, {"333333333333", "ap-northeast-2"},
@@ -391,6 +440,32 @@ func TestCollect_MultiAccount(t *testing.T) {
 		if got := gotVol["vol-"+id]; !reflect.DeepEqual(got, wantVol) {
 			t.Errorf("bad volume mapping:\n got %+v\nwant %+v", got, wantVol)
 		}
+		wantCluster := Cluster{
+			AccountID: target.acct, Region: target.region, ScannedAt: scanTime, Name: "k-" + id, ARN: "arn:eks-" + id,
+			Version: "1.31", PlatformVersion: "eks.12", Status: "ACTIVE", Endpoint: "https://k-" + id + ".eks",
+			RoleARN: "arn:aws:iam::" + target.acct + ":role/eks", VpcID: "vpc-" + id,
+			SubnetIDs: []string{"subnet-" + id}, SecurityGroupIDs: []string{"sg-1"}, ClusterSecurityGroupID: "sg-eks",
+			EndpointPublicAccess: true, PublicAccessCIDRs: []string{"0.0.0.0/0"}, AuthenticationMode: "API_AND_CONFIG_MAP",
+			Addons: []Addon{{ // "gone" was deleted after listing: skipped, not an error
+				Name: "vpc-cni", ARN: "arn:addon-" + id, Version: "v1.19.0-eksbuild.1", Status: "DEGRADED",
+				ServiceAccountRoleARN: "arn:aws:iam::" + target.acct + ":role/cni", Owner: "aws", Publisher: "eks",
+				HealthIssues: []AddonIssue{{Code: "InsufficientNumberOfReplicas", Message: "1/2 ready", ResourceIDs: []string{"aws-node"}}},
+				CreatedAt:    time.Date(2024, 1, 2, 3, 5, 0, 0, time.UTC),
+				ModifiedAt:   time.Date(2024, 1, 2, 3, 6, 40, 0, time.UTC),
+				Tags:         map[string]string{},
+			}},
+			CreatedAt: time.Date(2024, 1, 2, 3, 4, 5, 0, time.UTC),
+			Tags:      map[string]string{"team": "platform"},
+		}
+		// JSON epoch timestamps decode in local time; compare in UTC.
+		gotK := gotCluster["k-"+id]
+		gotK.CreatedAt, gotK.Addons = gotK.CreatedAt.UTC(), slices.Clone(gotK.Addons)
+		for i := range gotK.Addons {
+			gotK.Addons[i].CreatedAt, gotK.Addons[i].ModifiedAt = gotK.Addons[i].CreatedAt.UTC(), gotK.Addons[i].ModifiedAt.UTC()
+		}
+		if !reflect.DeepEqual(gotK, wantCluster) {
+			t.Errorf("bad cluster mapping:\n got %+v\nwant %+v", gotK, wantCluster)
+		}
 	}
 
 	// IAM is global: account 111 has two regions but is scanned once.
@@ -424,11 +499,11 @@ func TestCollect_MultiAccount(t *testing.T) {
 		}
 		failed[e.Resource+"/"+e.Region] = true
 	}
-	if len(inv.Errors) != 10 || !failed["vpc/ap-northeast-2"] || !failed["subnet/ap-northeast-2"] ||
+	if len(inv.Errors) != 11 || !failed["vpc/ap-northeast-2"] || !failed["subnet/ap-northeast-2"] ||
 		!failed["routetable/ap-northeast-2"] || !failed["natgateway/ap-northeast-2"] ||
 		!failed["internetgateway/ap-northeast-2"] || !failed["egressonlyinternetgateway/ap-northeast-2"] ||
 		!failed["transitgateway/ap-northeast-2"] || !failed["ec2/ap-northeast-2"] || !failed["ebs/ap-northeast-2"] ||
-		!failed["iam/global"] {
+		!failed["eks/ap-northeast-2"] || !failed["iam/global"] {
 		t.Fatalf("want a failure per resource type for 222222222222, got %v", inv.Errors)
 	}
 	// Credentials are cached per account across regions and resource types.
@@ -453,12 +528,12 @@ func TestCollect_Cancelled(t *testing.T) {
 
 	if len(inv.VPCs) != 0 || len(inv.Subnets) != 0 || len(inv.RouteTables) != 0 || len(inv.NATGateways) != 0 ||
 		len(inv.InternetGateways) != 0 || len(inv.EgressOnlyInternetGateways) != 0 || len(inv.TransitGateways) != 0 ||
-		len(inv.Instances) != 0 || len(inv.Volumes) != 0 || len(inv.IAM) != 0 {
+		len(inv.Instances) != 0 || len(inv.Volumes) != 0 || len(inv.Clusters) != 0 || len(inv.IAM) != 0 {
 		t.Errorf("want nothing after cancel, got %+v", inv)
 	}
-	// 3 scans (2 + 1 regions) for each of the 9 regional types + 2 IAM scans (one per account).
-	if len(inv.Errors) != 29 {
-		t.Fatalf("want 29 scan errors, got %v", inv.Errors)
+	// 3 scans (2 + 1 regions) for each of the 10 regional types + 2 IAM scans (one per account).
+	if len(inv.Errors) != 32 {
+		t.Fatalf("want 32 scan errors, got %v", inv.Errors)
 	}
 	for _, e := range inv.Errors {
 		if !errors.Is(e.Err, context.Canceled) {
@@ -502,10 +577,10 @@ func TestCollect_AccountConcurrency(t *testing.T) {
 	inv := c.Collect(context.Background(), accounts)
 	if len(inv.Errors) != 0 || len(inv.VPCs) != 8 || len(inv.Subnets) != 8 || len(inv.RouteTables) != 8 || len(inv.NATGateways) != 8 ||
 		len(inv.InternetGateways) != 8 || len(inv.EgressOnlyInternetGateways) != 8 || len(inv.TransitGateways) != 8 ||
-		len(inv.Instances) != 8 || len(inv.Volumes) != 8 || len(inv.IAM) != 4 {
-		t.Fatalf("want 8 of each regional type, 4 principals, no errors; got %d VPCs, %d subnets, %d route tables, %d NAT, %d internet, %d egress-only, %d transit, %d instances, %d volumes, %d principals, errs %v",
+		len(inv.Instances) != 8 || len(inv.Volumes) != 8 || len(inv.Clusters) != 8 || len(inv.IAM) != 4 {
+		t.Fatalf("want 8 of each regional type, 4 principals, no errors; got %d VPCs, %d subnets, %d route tables, %d NAT, %d internet, %d egress-only, %d transit, %d instances, %d volumes, %d clusters, %d principals, errs %v",
 			len(inv.VPCs), len(inv.Subnets), len(inv.RouteTables), len(inv.NATGateways), len(inv.InternetGateways),
-			len(inv.EgressOnlyInternetGateways), len(inv.TransitGateways), len(inv.Instances), len(inv.Volumes), len(inv.IAM), inv.Errors)
+			len(inv.EgressOnlyInternetGateways), len(inv.TransitGateways), len(inv.Instances), len(inv.Volumes), len(inv.Clusters), len(inv.IAM), inv.Errors)
 	}
 	// The cap holds across resource types, not just within VPC scans.
 	for acct, n := range peak {
@@ -525,8 +600,8 @@ func TestCollect_AccountConcurrency(t *testing.T) {
 				done[target] = true
 			}
 		}
-		if n := len(seq); n != 4*9+1 {
-			t.Errorf("account %s: %d calls, want %d (9 types x 4 regions + IAM)", acct, n, 4*9+1)
+		if n := len(seq); n != 4*10+1 {
+			t.Errorf("account %s: %d calls, want %d (10 types x 4 regions + IAM)", acct, n, 4*10+1)
 		}
 	}
 }
