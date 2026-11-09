@@ -16,6 +16,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/smithy-go/encoding/cbor"
 
 	"github.com/innfi/awsinv/awscreds"
 	"github.com/innfi/awsinv/store"
@@ -29,6 +30,10 @@ func fakeAWS(t *testing.T, assumeCalls *atomic.Int32, onCall func(acct, target s
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/clusters") {
 			fakeEKS(t, w, r, onCall)
+			return
+		}
+		if r.Header.Get("Smithy-Protocol") == "rpc-v2-cbor" {
+			fakeCloudWatch(t, w, r, onCall)
 			return
 		}
 		_ = r.ParseForm()
@@ -170,6 +175,46 @@ func fakeAWS(t *testing.T, assumeCalls *atomic.Int32, onCall func(acct, target s
 				<attachmentSet><item><instanceId>i-%s-%s</instanceId><device>/dev/xvda</device><status>attached</status><deleteOnTermination>true</deleteOnTermination></item></attachmentSet>
 				<tagSet><item><key>Name</key><value>root</value></item></tagSet>
 				</item></volumeSet></DescribeVolumesResponse>`, acct, region, region, acct, region)
+		case "DescribeDBInstances":
+			acct, region := caller(r)
+			if onCall != nil {
+				onCall(acct, region)
+			}
+			fmt.Fprintf(w, `<DescribeDBInstancesResponse><DescribeDBInstancesResult><DBInstances><DBInstance>
+				<DBInstanceIdentifier>db-%[1]s</DBInstanceIdentifier><DBInstanceArn>arn:db-%[1]s</DBInstanceArn>
+				<DbiResourceId>db-RES</DbiResourceId><DBInstanceClass>db.r6g.large</DBInstanceClass>
+				<Engine>aurora-postgresql</Engine><EngineVersion>16.4</EngineVersion><DBInstanceStatus>available</DBInstanceStatus>
+				<DBClusterIdentifier>aur-%[1]s</DBClusterIdentifier>
+				<Endpoint><Address>db-%[1]s.rds</Address><Port>5432</Port></Endpoint>
+				<AvailabilityZone>%[2]sa</AvailabilityZone><MultiAZ>false</MultiAZ><PubliclyAccessible>false</PubliclyAccessible>
+				<DBSubnetGroup><DBSubnetGroupName>db-subnets</DBSubnetGroupName><VpcId>vpc-%[1]s</VpcId>
+					<Subnets><Subnet><SubnetIdentifier>subnet-%[1]s</SubnetIdentifier></Subnet></Subnets></DBSubnetGroup>
+				<VpcSecurityGroups><VpcSecurityGroupMembership><VpcSecurityGroupId>sg-db</VpcSecurityGroupId><Status>active</Status></VpcSecurityGroupMembership></VpcSecurityGroups>
+				<StorageType>aurora</StorageType><AllocatedStorage>1</AllocatedStorage><StorageEncrypted>true</StorageEncrypted>
+				<KmsKeyId>arn:kms-1</KmsKeyId><BackupRetentionPeriod>7</BackupRetentionPeriod><DeletionProtection>true</DeletionProtection>
+				<InstanceCreateTime>2024-01-02T03:04:05Z</InstanceCreateTime>
+				<TagList><Tag><Key>team</Key><Value>data</Value></Tag></TagList>
+				</DBInstance></DBInstances></DescribeDBInstancesResult></DescribeDBInstancesResponse>`, acct+"-"+region, region)
+		case "DescribeDBClusters":
+			acct, region := caller(r)
+			if onCall != nil {
+				onCall(acct, region)
+			}
+			fmt.Fprintf(w, `<DescribeDBClustersResponse><DescribeDBClustersResult><DBClusters><DBCluster>
+				<DBClusterIdentifier>aur-%[1]s</DBClusterIdentifier><DBClusterArn>arn:aur-%[1]s</DBClusterArn>
+				<DbClusterResourceId>cluster-RES</DbClusterResourceId><Engine>aurora-postgresql</Engine>
+				<EngineVersion>16.4</EngineVersion><EngineMode>provisioned</EngineMode><Status>available</Status>
+				<Endpoint>aur-%[1]s.rds</Endpoint><ReaderEndpoint>aur-%[1]s.ro.rds</ReaderEndpoint><Port>5432</Port>
+				<MultiAZ>true</MultiAZ><AvailabilityZones><AvailabilityZone>%[2]sa</AvailabilityZone><AvailabilityZone>%[2]sc</AvailabilityZone></AvailabilityZones>
+				<DBSubnetGroup>db-subnets</DBSubnetGroup>
+				<VpcSecurityGroups><VpcSecurityGroupMembership><VpcSecurityGroupId>sg-db</VpcSecurityGroupId><Status>active</Status></VpcSecurityGroupMembership></VpcSecurityGroups>
+				<DBClusterMembers><DBClusterMember><DBInstanceIdentifier>db-%[1]s</DBInstanceIdentifier><IsClusterWriter>true</IsClusterWriter></DBClusterMember></DBClusterMembers>
+				<StorageType>aurora-iopt1</StorageType><StorageEncrypted>true</StorageEncrypted><KmsKeyId>arn:kms-1</KmsKeyId>
+				<BackupRetentionPeriod>7</BackupRetentionPeriod><DeletionProtection>true</DeletionProtection>
+				<ServerlessV2ScalingConfiguration><MinCapacity>0.5</MinCapacity><MaxCapacity>16</MaxCapacity></ServerlessV2ScalingConfiguration>
+				<ClusterCreateTime>2024-01-02T03:04:00Z</ClusterCreateTime>
+				<TagList><Tag><Key>team</Key><Value>data</Value></Tag></TagList>
+				</DBCluster></DBClusters></DescribeDBClustersResult></DescribeDBClustersResponse>`, acct+"-"+region, region)
 		case "ListUsers":
 			acct, _ := caller(r)
 			if onCall != nil {
@@ -228,6 +273,66 @@ func fakeEKS(t *testing.T, w http.ResponseWriter, r *http.Request, onCall func(a
 		t.Errorf("unexpected EKS path %q", r.URL.Path)
 		w.WriteHeader(http.StatusNotFound)
 	}
+}
+
+// fakeCloudWatch serves the CloudWatch rpc-v2-cbor API: one metric alarm and
+// one composite alarm per target.
+func fakeCloudWatch(t *testing.T, w http.ResponseWriter, r *http.Request, onCall func(acct, target string)) {
+	if r.URL.Path != "/service/GraniteServiceVersion20100801/operation/DescribeAlarms" {
+		t.Errorf("unexpected CloudWatch path %q", r.URL.Path)
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	acct, region := caller(r)
+	if onCall != nil {
+		onCall(acct, region)
+	}
+	id := acct + "-" + region
+	epoch := func(sec float64) cbor.Value { return &cbor.Tag{ID: 1, Value: cbor.Float64(sec)} }
+	strs := func(s ...string) cbor.List {
+		var l cbor.List
+		for _, v := range s {
+			l = append(l, cbor.String(v))
+		}
+		return l
+	}
+	body := cbor.Map{
+		"MetricAlarms": cbor.List{cbor.Map{
+			"AlarmName":                          cbor.String("cpu-" + id),
+			"AlarmArn":                           cbor.String("arn:alarm:cpu-" + id),
+			"AlarmDescription":                   cbor.String("cpu high"),
+			"StateValue":                         cbor.String("ALARM"),
+			"StateReason":                        cbor.String("threshold crossed"),
+			"StateUpdatedTimestamp":              epoch(1704164700),
+			"AlarmConfigurationUpdatedTimestamp": epoch(1704164645),
+			"ActionsEnabled":                     cbor.Bool(true),
+			"AlarmActions":                       strs("arn:sns:ops"),
+			"OKActions":                          strs("arn:sns:ops"),
+			"Namespace":                          cbor.String("AWS/EC2"),
+			"MetricName":                         cbor.String("CPUUtilization"),
+			"Dimensions": cbor.List{cbor.Map{
+				"Name": cbor.String("InstanceId"), "Value": cbor.String("i-" + id),
+			}},
+			"ExtendedStatistic":  cbor.String("p99"),
+			"Period":             cbor.Uint(60),
+			"EvaluationPeriods":  cbor.Uint(3),
+			"ComparisonOperator": cbor.String("GreaterThanThreshold"),
+			"Threshold":          cbor.Float64(80.5),
+			"TreatMissingData":   cbor.String("breaching"),
+		}},
+		"CompositeAlarms": cbor.List{cbor.Map{
+			"AlarmName":                          cbor.String("svc-" + id),
+			"AlarmArn":                           cbor.String("arn:alarm:svc-" + id),
+			"StateValue":                         cbor.String("OK"),
+			"StateUpdatedTimestamp":              epoch(1704164800),
+			"AlarmConfigurationUpdatedTimestamp": epoch(1704164645),
+			"ActionsEnabled":                     cbor.Bool(false),
+			"AlarmRule":                          cbor.String(`ALARM("cpu-` + id + `")`),
+		}},
+	}
+	w.Header().Set("Smithy-Protocol", "rpc-v2-cbor")
+	w.Header().Set("Content-Type", "application/cbor")
+	w.Write(cbor.Encode(body))
 }
 
 // caller reads the SigV4 header: Credential=AK<acct>/<date>/<region>/<svc>/aws4_request
@@ -349,6 +454,21 @@ func TestCollect_MultiAccount(t *testing.T) {
 	if len(inv.Instances) != 3 || len(inv.Volumes) != 3 || len(inv.Clusters) != 3 {
 		t.Errorf("want 3 instances, 3 volumes, 3 clusters, got %d, %d, %d", len(inv.Instances), len(inv.Volumes), len(inv.Clusters))
 	}
+	gotDB := map[string]DBInstance{}
+	for _, d := range inv.DBInstances {
+		gotDB[d.DBInstanceID] = d
+	}
+	gotAurora := map[string]DBCluster{}
+	for _, d := range inv.DBClusters {
+		gotAurora[d.DBClusterID] = d
+	}
+	gotAlarm := map[string]Alarm{}
+	for _, a := range inv.Alarms {
+		gotAlarm[a.Name] = a
+	}
+	if len(inv.DBInstances) != 3 || len(inv.DBClusters) != 3 || len(inv.Alarms) != 6 {
+		t.Errorf("want 3 DB instances, 3 DB clusters, 6 alarms, got %d, %d, %d", len(inv.DBInstances), len(inv.DBClusters), len(inv.Alarms))
+	}
 	for _, target := range []struct{ acct, region string }{
 		{"111111111111", "ap-northeast-2"}, {"111111111111", "us-east-1"}, {"333333333333", "ap-northeast-2"},
 	} {
@@ -466,6 +586,53 @@ func TestCollect_MultiAccount(t *testing.T) {
 		if !reflect.DeepEqual(gotK, wantCluster) {
 			t.Errorf("bad cluster mapping:\n got %+v\nwant %+v", gotK, wantCluster)
 		}
+		wantDB := DBInstance{
+			AccountID: target.acct, Region: target.region, ScannedAt: scanTime, DBInstanceID: "db-" + id, ARN: "arn:db-" + id,
+			ResourceID: "db-RES", Class: "db.r6g.large", Engine: "aurora-postgresql", EngineVersion: "16.4", Status: "available",
+			ClusterID: "aur-" + id, EndpointAddress: "db-" + id + ".rds", EndpointPort: 5432, AvailabilityZone: target.region + "a",
+			VpcID: "vpc-" + id, SubnetGroup: "db-subnets", SubnetIDs: []string{"subnet-" + id}, SecurityGroupIDs: []string{"sg-db"},
+			StorageType: "aurora", AllocatedGiB: 1, StorageEncrypted: true, KMSKeyID: "arn:kms-1", BackupRetention: 7,
+			DeletionProtection: true, CreateTime: time.Date(2024, 1, 2, 3, 4, 5, 0, time.UTC),
+			Tags: map[string]string{"team": "data"},
+		}
+		if got := gotDB["db-"+id]; !reflect.DeepEqual(got, wantDB) {
+			t.Errorf("bad DB instance mapping:\n got %+v\nwant %+v", got, wantDB)
+		}
+		wantAurora := DBCluster{
+			AccountID: target.acct, Region: target.region, ScannedAt: scanTime, DBClusterID: "aur-" + id, ARN: "arn:aur-" + id,
+			ResourceID: "cluster-RES", Engine: "aurora-postgresql", EngineVersion: "16.4", EngineMode: "provisioned",
+			Status: "available", Endpoint: "aur-" + id + ".rds", ReaderEndpoint: "aur-" + id + ".ro.rds", Port: 5432,
+			MultiAZ: true, AvailabilityZones: []string{target.region + "a", target.region + "c"}, SubnetGroup: "db-subnets",
+			SecurityGroupIDs: []string{"sg-db"}, Members: []DBClusterMember{{DBInstanceID: "db-" + id, IsWriter: true}},
+			StorageType: "aurora-iopt1", StorageEncrypted: true, KMSKeyID: "arn:kms-1", BackupRetention: 7,
+			DeletionProtection: true, ServerlessV2MinACU: 0.5, ServerlessV2MaxACU: 16,
+			CreateTime: time.Date(2024, 1, 2, 3, 4, 0, 0, time.UTC),
+			Tags:       map[string]string{"team": "data"},
+		}
+		if got := gotAurora["aur-"+id]; !reflect.DeepEqual(got, wantAurora) {
+			t.Errorf("bad DB cluster mapping:\n got %+v\nwant %+v", got, wantAurora)
+		}
+		wantMetric := Alarm{
+			AccountID: target.acct, Region: target.region, ScannedAt: scanTime, Name: "cpu-" + id, ARN: "arn:alarm:cpu-" + id,
+			Type: "metric", Description: "cpu high", State: "ALARM", StateReason: "threshold crossed",
+			StateUpdatedAt: time.Date(2024, 1, 2, 3, 5, 0, 0, time.UTC), UpdatedAt: time.Date(2024, 1, 2, 3, 4, 5, 0, time.UTC),
+			ActionsEnabled: true, AlarmActions: []string{"arn:sns:ops"}, OKActions: []string{"arn:sns:ops"},
+			Namespace: "AWS/EC2", MetricName: "CPUUtilization", Dimensions: map[string]string{"InstanceId": "i-" + id},
+			Statistic: "p99", PeriodSeconds: 60, EvaluationPeriods: 3, ComparisonOperator: "GreaterThanThreshold",
+			Threshold: 80.5, TreatMissingData: "breaching",
+		}
+		wantComposite := Alarm{
+			AccountID: target.acct, Region: target.region, ScannedAt: scanTime, Name: "svc-" + id, ARN: "arn:alarm:svc-" + id,
+			Type: "composite", State: "OK", StateUpdatedAt: time.Date(2024, 1, 2, 3, 6, 40, 0, time.UTC),
+			UpdatedAt: time.Date(2024, 1, 2, 3, 4, 5, 0, time.UTC), AlarmRule: `ALARM("cpu-` + id + `")`,
+		}
+		for _, want := range []Alarm{wantMetric, wantComposite} {
+			got := gotAlarm[want.Name]
+			got.StateUpdatedAt, got.UpdatedAt = got.StateUpdatedAt.UTC(), got.UpdatedAt.UTC() // epoch decodes as local
+			if !reflect.DeepEqual(got, want) {
+				t.Errorf("bad alarm mapping:\n got %+v\nwant %+v", got, want)
+			}
+		}
 	}
 
 	// IAM is global: account 111 has two regions but is scanned once.
@@ -499,11 +666,12 @@ func TestCollect_MultiAccount(t *testing.T) {
 		}
 		failed[e.Resource+"/"+e.Region] = true
 	}
-	if len(inv.Errors) != 11 || !failed["vpc/ap-northeast-2"] || !failed["subnet/ap-northeast-2"] ||
+	if len(inv.Errors) != 14 || !failed["vpc/ap-northeast-2"] || !failed["subnet/ap-northeast-2"] ||
 		!failed["routetable/ap-northeast-2"] || !failed["natgateway/ap-northeast-2"] ||
 		!failed["internetgateway/ap-northeast-2"] || !failed["egressonlyinternetgateway/ap-northeast-2"] ||
 		!failed["transitgateway/ap-northeast-2"] || !failed["ec2/ap-northeast-2"] || !failed["ebs/ap-northeast-2"] ||
-		!failed["eks/ap-northeast-2"] || !failed["iam/global"] {
+		!failed["eks/ap-northeast-2"] || !failed["rds/ap-northeast-2"] || !failed["rdscluster/ap-northeast-2"] ||
+		!failed["cloudwatchalarm/ap-northeast-2"] || !failed["iam/global"] {
 		t.Fatalf("want a failure per resource type for 222222222222, got %v", inv.Errors)
 	}
 	// Credentials are cached per account across regions and resource types.
@@ -528,12 +696,13 @@ func TestCollect_Cancelled(t *testing.T) {
 
 	if len(inv.VPCs) != 0 || len(inv.Subnets) != 0 || len(inv.RouteTables) != 0 || len(inv.NATGateways) != 0 ||
 		len(inv.InternetGateways) != 0 || len(inv.EgressOnlyInternetGateways) != 0 || len(inv.TransitGateways) != 0 ||
-		len(inv.Instances) != 0 || len(inv.Volumes) != 0 || len(inv.Clusters) != 0 || len(inv.IAM) != 0 {
+		len(inv.Instances) != 0 || len(inv.Volumes) != 0 || len(inv.Clusters) != 0 || len(inv.DBInstances) != 0 ||
+		len(inv.DBClusters) != 0 || len(inv.Alarms) != 0 || len(inv.IAM) != 0 {
 		t.Errorf("want nothing after cancel, got %+v", inv)
 	}
-	// 3 scans (2 + 1 regions) for each of the 10 regional types + 2 IAM scans (one per account).
-	if len(inv.Errors) != 32 {
-		t.Fatalf("want 32 scan errors, got %v", inv.Errors)
+	// 3 scans (2 + 1 regions) for each of the 13 regional types + 2 IAM scans (one per account).
+	if len(inv.Errors) != 41 {
+		t.Fatalf("want 41 scan errors, got %v", inv.Errors)
 	}
 	for _, e := range inv.Errors {
 		if !errors.Is(e.Err, context.Canceled) {
@@ -577,10 +746,12 @@ func TestCollect_AccountConcurrency(t *testing.T) {
 	inv := c.Collect(context.Background(), accounts)
 	if len(inv.Errors) != 0 || len(inv.VPCs) != 8 || len(inv.Subnets) != 8 || len(inv.RouteTables) != 8 || len(inv.NATGateways) != 8 ||
 		len(inv.InternetGateways) != 8 || len(inv.EgressOnlyInternetGateways) != 8 || len(inv.TransitGateways) != 8 ||
-		len(inv.Instances) != 8 || len(inv.Volumes) != 8 || len(inv.Clusters) != 8 || len(inv.IAM) != 4 {
-		t.Fatalf("want 8 of each regional type, 4 principals, no errors; got %d VPCs, %d subnets, %d route tables, %d NAT, %d internet, %d egress-only, %d transit, %d instances, %d volumes, %d clusters, %d principals, errs %v",
+		len(inv.Instances) != 8 || len(inv.Volumes) != 8 || len(inv.Clusters) != 8 || len(inv.DBInstances) != 8 ||
+		len(inv.DBClusters) != 8 || len(inv.Alarms) != 16 || len(inv.IAM) != 4 {
+		t.Fatalf("want 8 of each regional type (16 alarms), 4 principals, no errors; got %d VPCs, %d subnets, %d route tables, %d NAT, %d internet, %d egress-only, %d transit, %d instances, %d volumes, %d clusters, %d DB instances, %d DB clusters, %d alarms, %d principals, errs %v",
 			len(inv.VPCs), len(inv.Subnets), len(inv.RouteTables), len(inv.NATGateways), len(inv.InternetGateways),
-			len(inv.EgressOnlyInternetGateways), len(inv.TransitGateways), len(inv.Instances), len(inv.Volumes), len(inv.Clusters), len(inv.IAM), inv.Errors)
+			len(inv.EgressOnlyInternetGateways), len(inv.TransitGateways), len(inv.Instances), len(inv.Volumes), len(inv.Clusters),
+			len(inv.DBInstances), len(inv.DBClusters), len(inv.Alarms), len(inv.IAM), inv.Errors)
 	}
 	// The cap holds across resource types, not just within VPC scans.
 	for acct, n := range peak {
@@ -600,8 +771,8 @@ func TestCollect_AccountConcurrency(t *testing.T) {
 				done[target] = true
 			}
 		}
-		if n := len(seq); n != 4*10+1 {
-			t.Errorf("account %s: %d calls, want %d (10 types x 4 regions + IAM)", acct, n, 4*10+1)
+		if n := len(seq); n != 4*13+1 {
+			t.Errorf("account %s: %d calls, want %d (13 types x 4 regions + IAM)", acct, n, 4*13+1)
 		}
 	}
 }

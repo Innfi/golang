@@ -33,13 +33,16 @@ type Inventory struct {
 	Instances                  []Instance
 	Volumes                    []Volume
 	Clusters                   []Cluster
+	DBInstances                []DBInstance
+	DBClusters                 []DBCluster
+	Alarms                     []Alarm
 	IAM                        []IAMPrincipal
 	Errors                     []ScanError `json:"-"`
 }
 
 // ScanError records a per-target failure without aborting the whole run.
 type ScanError struct {
-	Resource  string // "vpc", "subnet", "routetable", "natgateway", "ec2", "ebs", "eks", "iam", ...
+	Resource  string // "vpc", "subnet", "routetable", "natgateway", "ec2", "ebs", "eks", "rds", "cloudwatchalarm", "iam", ...
 	AccountID string
 	Region    string
 	Err       error
@@ -107,6 +110,9 @@ func (c *Collector) Collect(ctx context.Context, accounts []store.Account) Inven
 		into("ec2", &inv.Instances, c.instancesIn),
 		into("ebs", &inv.Volumes, c.volumesIn),
 		into("eks", &inv.Clusters, c.clustersIn),
+		into("rds", &inv.DBInstances, c.dbInstancesIn),
+		into("rdscluster", &inv.DBClusters, c.dbClustersIn),
+		into("cloudwatchalarm", &inv.Alarms, c.alarmsIn),
 	}
 	global := []scanner{
 		into("iam", &inv.IAM, c.iamIn),
